@@ -17,3 +17,4 @@ geopandas~=1.0.1
 numpy~=2.2.0
 sumolib~=1.21.0
 shapely~=2.0.6
+torchrl==0.10.1

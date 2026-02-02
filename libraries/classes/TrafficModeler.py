@@ -11,7 +11,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 from scipy.interpolate import UnivariateSpline
 from libraries.classes.SumoSimulator import Simulator
-from libraries.constants import SUMO_PATH, SUMO_NET_PATH, SUMO_DETECTORS_ADD_FILE_PATH, SUMO_OUTPUT_PATH, SUMO_TOOLS_PATH
+from libraries.constants import SUMO_PATH, SUMO_NET_FILE_PATH, SUMO_DETECTORS_ADD_FILE_PATH, SUMO_OUTPUT_PATH, SUMO_TOOLS_PATH
 from pathlib import Path
 
 class TrafficModeler:

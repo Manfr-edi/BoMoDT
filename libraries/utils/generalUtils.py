@@ -10,7 +10,7 @@ from bson import ObjectId
 from pymongo import MongoClient
 
 from libraries.classes.TrafficModeler import TrafficModeler
-from libraries.constants import SUMO_PATH, SUMO_NET_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH
+from libraries.constants import SUMO_PATH, SUMO_NET_FILE_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH
 from libraries.classes.SumoSimulator import Simulator
 
 
@@ -121,7 +121,7 @@ def processingTlData(timeSlot, trafficData, roads: dict):
     # sumoSimulator = Simulator(configurationPath=configurationPath, logFile=logFile)
     # print("Instantiating a Traffic Modeler...")
     # basemodel = TrafficModeler(simulator=sumoSimulator, trafficDataFile=PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH,
-    #                            sumoNetFile=SUMO_NET_PATH,
+    #                            sumoNetFile=SUMO_NET_FILE_PATH,
     #                            date='2024-02-01',
     #                            timeSlot=timeSlot,
     #                            modelType="greenshield")

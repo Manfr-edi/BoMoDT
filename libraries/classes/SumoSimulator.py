@@ -17,8 +17,10 @@ import os
 import libtraci
 import traci.constants as tc
 from typing import Optional
+import pandas as pd
+import json
 
-from libraries.constants import SUMO_OUTPUT_PATH, SUMO_PATH
+from libraries.constants import SUMO_OUTPUT_PATH, SUMO_PATH, SUMO_NETWORK_PATH
 
 
 class Simulator:
@@ -36,6 +38,7 @@ class Simulator:
     Class Methods:
         - __init__: Constructor to initialize a new instance of the Simulator class.
         - start: Method to start the sumoenv simulation with or without the GUI.
+        - isRunning: Method to check if the simulation is running.
         - startBasic: Method to start the basic sumoenv simulation configuration.
         - startCongestioned: Method to start the sumoenv simulation with congestion.
         - step: Method to execute a defined number of simulation steps.
@@ -57,7 +60,7 @@ class Simulator:
     """
 
     logFile: str
-    def __init__(self, configurationPath: str, logFile: str):
+    def __init__(self, configurationPath: str, logFile: str, tazTlsMapFile = None):
         """
         Initializes the Simulator with the given configuration file and log file.
 
@@ -66,22 +69,28 @@ class Simulator:
         """
         self.configurationPath = configurationPath
         self.logFile = logFile
-
+        self.tazTlsMapFile = tazTlsMapFile
         # TODO: check if this routePath variable is needed.
         self.routePath = configurationPath
         self.typePath = configurationPath
-        staticpath = os.path.abspath(self.configurationPath + "/static")
-        if not os.path.exists(staticpath):
+
+        if tazTlsMapFile is not None:
+            with open(tazTlsMapFile) as f:
+                self.tazTlsMap = json.load(f)
+
+        # WRONG PATH
+        #staticpath = os.path.abspath(self.configurationPath + "/static")
+        if not os.path.exists(SUMO_NETWORK_PATH):
             print("Error: the given path does not exist.")
             return
         outputpath = os.path.abspath(self.configurationPath + "/output")
         os.makedirs(outputpath, exist_ok=True)
 
-        os.environ["STATICPATH"] = staticpath
+        os.environ["STATICPATH"] = SUMO_NETWORK_PATH
         self.listener = ValueListener()
         libtraci.addStepListener(self.listener)
 
-    def start(self, activeGui: bool = False, logFilePath: Optional[str] = None):
+    def start(self, activeGui: bool = False, logFilePath: Optional[str] = None, noWarnings: bool = False, continuous: bool = False, rl_mode: bool = False):
         """
         Start the SUMO environment simulation, with or without the GUI, based on the `activeGui` parameter.
         If a simulation is already loaded, it will be overwritten.
@@ -97,8 +106,19 @@ class Simulator:
 
         # Construct the command for starting SUMO or SUMO-GUI
         sumo_command = "sumo-gui" if activeGui else "sumo"
-        command = [sumo_command, "-c", os.path.join(self.configurationPath, "run.sumocfg")]
+        if noWarnings:
+            if rl_mode:
+                command = [sumo_command, "-c", os.path.join(self.configurationPath, "run_rl.sumocfg"), "--no-step-log",
+                           "true", "-W", "true", "--duration-log.disable"]
+            else:
+                command = [sumo_command, "-c", os.path.join(self.configurationPath, "run.sumocfg"), "--no-step-log",
+                       "true", "-W", "true", "--duration-log.disable"]
 
+        else:
+            if rl_mode:
+                command = [sumo_command, "-c", os.path.join(self.configurationPath, "run_rl.sumocfg")]
+            else:
+                command = [sumo_command, "-c", os.path.join(self.configurationPath, "run.sumocfg")]
         # Set the log file path if specified
         self.logFile = logFilePath if logFilePath else self.logFile
 
@@ -106,8 +126,15 @@ class Simulator:
         libtraci.start(command, traceFile=self.logFile)
         print("Note: Each simulation step is equivalent to " + str(libtraci.simulation.getDeltaT()) + " seconds.")
 
-        # Resume the simulation
-        self.resume()
+        if continuous:
+            # Resume the simulation
+            self.resume()
+
+    def isRunning(self) -> bool:
+        """
+        Method to check if the simulation is running. Returns `True` if the simulation is running, `False` otherwise.
+        """
+        return True if libtraci.simulation_isLoaded() and libtraci.simulation.getMinExpectedNumber() else False
 
     def startBasic(self, activeGui=False):
         """
@@ -429,10 +456,15 @@ class Simulator:
         :return (bool): True if the TLS exists, False otherwise.
         """
         tls = self.getTLSList()
-        if tlsID in tls:
-            return True
-        else:
-            return False
+        return True if tlsID in tls else False
+
+
+    def get_tls_for_taz(self, taz_id):
+        if self.tazTlsMap is None:
+            raise RuntimeError("TAZ→TLS mapping not loaded.")
+        if taz_id not in self.tazTlsMap:
+            raise KeyError(f"TAZ {taz_id} not found in mapping.")
+        return self.tazTlsMap[taz_id]
 
     def setTLSProgram(self, trafficLightID: str, programID: str, all=False):
         """
@@ -453,6 +485,203 @@ class Simulator:
             libtraci.trafficlight.setProgram(trafficLightID, programID)
             print("The program of the TLS " + str(trafficLightID) + " is changed to " + str(programID))
 
+    def set_tls_phase(self, tl_id, phase_index):
+        libtraci.trafficlight.setPhase(tl_id, phase_index)
+
+    def set_tls_current_phase_duration(self, tl_id, phase_duration, verbose = False):
+        program = libtraci.trafficlight_getAllProgramLogics(tl_id)
+        phase_index = program[0].currentPhaseIndex
+        phase = program[0].phases[phase_index]
+
+
+        program[0].phases[phase_index].maxDur = phase_duration
+        program[0].phases[phase_index].minDur = phase_duration
+        program[0].phases[phase_index].duration = phase_duration
+        libtraci.trafficlight_setProgramLogic(tl_id, program[0])
+        if verbose:
+            print("TL with ID: " + str(tl_id) + " phase: " + str(phase_index) + " duration set to: " + str(phase_duration))
+
+
+    def set_tls_phase_duration(self, tl_id, phase_id, phase_duration, verbose = False):
+        program = libtraci.trafficlight_getAllProgramLogics(tl_id)
+        phase_index = program[0].currentPhaseIndex
+        phase = program[0].phases[phase_index]
+
+        program[0].phases[phase_id].maxDur = phase_duration
+        program[0].phases[phase_id].minDur = phase_duration
+        program[0].phases[phase_id].duration = phase_duration
+        libtraci.trafficlight_setProgramLogic(tl_id, program[0])
+        program = libtraci.trafficlight_getAllProgramLogics(tl_id)
+        if verbose:
+            print("TL with ID: " + str(tl_id) + " phase: " + str(phase_id) + " duration set to: " + str(phase_duration))
+
+# ------------ E2 DETECTOR FUNCTIONS -----------------
+
+    def get_e2_detectors(self):
+        """
+        Returns the list of all E2 detector IDs.
+        """
+        return libtraci.lanearea.getIDList()
+
+    def get_tls_lanes(self, tls_id):
+        """
+        Returns the lanes controlled by a traffic light logic.
+        """
+        controlled_links = libtraci.trafficlight.getControlledLinks(tls_id)
+        # controlled_links is list[list[(incoming, outgoing, via)]]
+        lanes = set()
+        for group in controlled_links:
+            for link in group:
+                incoming = link[0]
+                lanes.add(incoming)
+        return lanes
+
+    def get_detectors_for_tls(self, tls_id):
+        """
+        Returns list of E2 detector IDs that belong to the TLS (matching lanes).
+        """
+        tls_lanes = self.get_tls_lanes(tls_id)
+        e2_list = self.get_e2_detectors()
+
+        detectors = []
+        for det in e2_list:
+            lane = libtraci.lanearea.getLaneID(det)
+            if lane in tls_lanes:
+                detectors.append(det)
+        return detectors
+
+    # ------------ METRICHE ULTIMO INTERVALLO -----------------
+
+    def get_e2_last_interval_metrics(self, tls_id, as_dataframe=False):
+        """
+        Returns last-interval metrics for all E2 detectors associated with the TLS.
+        Metrics:
+        - last interval nVehEntered
+        - last interval mean speed
+        - last interval occupancy (%)
+        """
+        dets = self.get_detectors_for_tls(tls_id)
+
+        data = []
+        for det in dets:
+            n = libtraci.lanearea.getLastIntervalVehicleNumber(det)
+            speed = libtraci.lanearea.getLastIntervalMeanSpeed(det)
+            max_jam_length = libtraci.lanearea.getLastIntervalMaxJamLengthInMeters(det)
+            occupancy = libtraci.lanearea.getLastIntervalOccupancy(det)
+
+            data.append({
+                "detector": det,
+                "lane": libtraci.lanearea.getLaneID(det),
+                "nVeh": n,
+                "meanSpeed": speed,
+                "maxJamLength": max_jam_length,
+                "occupancy": occupancy,
+            })
+
+        return pd.DataFrame(data) if as_dataframe else data
+
+    # ------------ METRICHE INTERVALLO CORRENTE -----------------
+
+    def get_e2_current_interval_metrics(self, tls_id, as_dataframe=False):
+        """
+        Current-interval metrics (non-aggregated):
+        - # vehicles since simulation start or last reset
+        - mean speed
+        - occupancy
+        """
+        dets = self.get_detectors_for_tls(tls_id)
+
+        data = []
+        for det in dets:
+            n = libtraci.lanearea.getIntervalVehicleNumber(det)
+            speed = libtraci.lanearea.getLastStepMeanSpeed(det)
+            max_jam_length = libtraci.lanearea.getIntervalMaxJamLengthInMeters(det)
+            occupancy = libtraci.lanearea.getIntervalOccupancy(det)
+
+            data.append({
+                "detector": det,
+                "lane": libtraci.lanearea.getLaneID(det),
+                "nVehCurrent": n,
+                "meanSpeedCurrent": speed,
+                "maxJamLength": max_jam_length,
+                "occupancyCurrent": occupancy,
+            })
+
+        return pd.DataFrame(data) if as_dataframe else data
+
+    def get_taz_e2_metrics(self, taz_id, interval="last", mode="dict"):
+        """
+        interval: "last" or "current"
+        mode: "dict" or "df"
+
+        Returns:
+        - metrics per TLS
+        - one average for the entire TAZ
+        """
+        tls_list = self.get_tls_for_taz(taz_id)
+
+        tls_results = {}
+        all_detector_records = []  # serve per media per TAZ
+        flat_records = []  # serve per dataframe finale
+
+        for tls in tls_list:
+            # ---- Recupero metriche E2 ----
+            if interval == "last":
+                det_metrics = self.get_e2_last_interval_metrics(tls, as_dataframe=False)
+            else:
+                det_metrics = self.get_e2_current_interval_metrics(tls, as_dataframe=False)
+
+            # salva dati grezzi TLS
+            tls_results[tls] = det_metrics
+
+            # prepara records per la media TAZ e DF
+            for r in det_metrics:
+                r2 = {"taz": taz_id, "tls": tls}
+                r2.update(r)
+
+                flat_records.append(r2)
+                all_detector_records.append(r2)
+
+
+        # ---- Calcolo media unica per tutta la TAZ ----
+
+        # Filtra record validi (solo quelli con veicoli)
+        valid_records = [r for r in all_detector_records if r.get("meanSpeed", 0) > 0]
+        if len(valid_records) > 0:
+
+            numeric_fields = [
+                k for k in all_detector_records[0].keys()
+                if k not in ("taz", "tls", "detector", "lane")
+            ]
+
+            taz_avg = {"detector": "_taz_avg", "tls": None, "lane": None, "taz": taz_id}
+
+            for field in numeric_fields:
+                taz_avg[field] = sum(r[field] for r in all_detector_records) / len(all_detector_records)
+        else:
+            # Nessun veicolo in tutta la TAZ → valori neutri
+            taz_avg = {
+                "taz": taz_id,
+                "detector": "_taz_avg",
+                "tls": None,
+                "lane": None,
+                "nVeh": 0,
+                "meanSpeed": 0,
+                "maxJamLength": 0,
+                "occupancy": 0
+            }
+
+        # aggiungi la riga media al df
+        flat_records.append(taz_avg)
+
+        # ---- Output finale ----
+        if mode == "dict":
+            return {
+                "tls_data": tls_results,
+                "taz_avg": taz_avg
+            }
+        else:
+            return pd.DataFrame(flat_records)
 class ValueListener(libtraci.StepListener):
     """
     A class for defining actions to be executed at every simulation step via the libtraci step listener.

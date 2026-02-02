@@ -1,13 +1,13 @@
 import os
 from libraries.utils.preprocessingUtils import *
-from libraries.constants import TRAFFIC_FLOW_OPENDATA_FILE_PATH, ACCURACY_TRAFFIC_LOOP_OPENDATA_FILE_PATH, SUMO_NET_PATH, SUMO_DETECTORS_ADD_FILE_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH
+from libraries.constants import TRAFFIC_FLOW_OPENDATA_FILE_PATH, ACCURACY_TRAFFIC_LOOP_OPENDATA_FILE_PATH, SUMO_NET_FILE_PATH, SUMO_DETECTORS_ADD_FILE_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH
 
 
 def run():
 
     exportZonesToSUMO(
         zoneFilePath=ZONE_OPENDATA_FILE_PATH,
-        sumoNetFile=SUMO_NET_PATH,
+        sumoNetFile=SUMO_NET_FILE_PATH,
         outputXmlPath=TAZ_ADDITIONAL_FILE_PATH,
         zoneColumnID="CODZONA",
         geoShapeColumn="Geo Shape"
@@ -24,7 +24,7 @@ def run():
     addZones(inputFilePath=TRAFFIC_FLOW_ACCURATE_FILE_PATH, zoneFilePath=STATISTICAL_AREAS_OPENDATA_FILE_PATH)
 
     #4. Creating TAZ file for SUMO map starting from open data zone file.
-    exportZonesToSUMO(zoneFilePath=ZONE_OPENDATA_FILE_PATH, sumoNetFile=SUMO_NET_PATH,
+    exportZonesToSUMO(zoneFilePath=ZONE_OPENDATA_FILE_PATH, sumoNetFile=SUMO_NET_FILE_PATH,
                       outputXmlPath=TAZ_ADDITIONAL_FILE_PATH, zoneColumnID="CODZONA", geoShapeColumn="Geo Shape")
 
     #5. Filtering the dataset in a specific TIME WINDOW for testing purposes, and reordering the dataset in a chronological order.
@@ -33,12 +33,12 @@ def run():
     reorderDataset(TRAFFIC_FLOW_ACCURATE_FILE_PATH, TRAFFIC_FLOW_ACCURATE_FILE_PATH)
 
     #6. Generate correspondence between roadName and edge ID in SUMO net file and creating the SUMO detectors additional file for modeling real induction loop positions in SUMO net.
-    generateRoadNamesFile(inputFile=TRAFFIC_FLOW_ACCURATE_FILE_PATH, sumoNetFile=SUMO_NET_PATH, roadNamesFilePath=ROAD_NAMES_FILE_PATH)
+    generateRoadNamesFile(inputFile=TRAFFIC_FLOW_ACCURATE_FILE_PATH, sumoNetFile=SUMO_NET_FILE_PATH, roadNamesFilePath=ROAD_NAMES_FILE_PATH)
 
 
     #7. Generate detector additional file for SUMO simulator
     generateDetectorsCoordinatesFile(inputFile=TRAFFIC_FLOW_ACCURATE_FILE_PATH, detectorCoordinatesPath=EXTRACTED_DETECTOR_COORDINATES_FILE_PATH)
-    mapDetectorsFromCoordinates(sumoNetFile=SUMO_NET_PATH, detectorCoordinatesPath=EXTRACTED_DETECTOR_COORDINATES_FILE_PATH, detectorFilePath=SUMO_DETECTORS_ADD_FILE_PATH)
+    mapDetectorsFromCoordinates(sumoNetFile=SUMO_NET_FILE_PATH, detectorCoordinatesPath=EXTRACTED_DETECTOR_COORDINATES_FILE_PATH, detectorFilePath=SUMO_DETECTORS_ADD_FILE_PATH)
     #7.1 Generate Induction Loop file for keeping traffic loop duplicates
     generateInductionLoopFile(inputFile=TRAFFIC_FLOW_ACCURATE_FILE_PATH, inductionLoopPath=EXTRACTED_INDUCTION_LOOP_FILE_PATH)
 

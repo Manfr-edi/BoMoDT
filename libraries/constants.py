@@ -28,6 +28,7 @@ REAL_TRAFFIC_FLOW_DATA_MVENV_PATH = REAL_WORLD_DATA_PATH + "/mvenvdata/flows"
 REAL_TRAFFIC_FLOW_DATA_MVENV_FILE_PATH = REAL_WORLD_DATA_PATH + "/mvenvdata/flows/real_traffic_flow.csv"
 EXTRACTED_DETECTOR_COORDINATES_FILE_PATH = REAL_WORLD_DATA_PATH + "/mvenvdata/detectors.csv"
 EXTRACTED_INDUCTION_LOOP_FILE_PATH = REAL_WORLD_DATA_PATH + "/mvenvdata/inductionLoop.csv"
+TAZ_FILE = REAL_WORLD_DATA_PATH + "/taz_to_tls.json"
 # folder where registered devices are stored
 REGISTERED_DEVICES_PATH = projectPath + "/registereddevices/"
 
@@ -48,7 +49,8 @@ DAILY_TRAFFIC_FLOW_FILE_PATH = PROCESSED_DATA_PATH + "/daily_flow.csv"
 ## SUMO ENVIRONMENT RELATED CONSTANTS
 SUMO_PATH = projectPath + "/sumoenv"
 SUMO_ROUTES_PATH = SUMO_PATH + "/routes"
-SUMO_NET_PATH = SUMO_PATH + "/static/full.net.xml"
+SUMO_NETWORK_PATH = SUMO_PATH + "/static"
+SUMO_NET_FILE_PATH = SUMO_PATH + "/static/full.net.xml"
 SUMO_DETECTORS_ADD_FILE_PATH = SUMO_PATH + "/static/detectors.add.xml"
 SUMO_OUTPUT_PATH = SUMO_PATH + "/output"
 TAZ_ADDITIONAL_FILE_PATH = SUMO_PATH + "/static/output_taz.add.xml"

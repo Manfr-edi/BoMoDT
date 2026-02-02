@@ -14,7 +14,7 @@ from PIL import Image
 import pytz
 from datetime import datetime
 from libraries.classes.TrafficModeler import TrafficModeler
-from libraries.constants import SUMO_PATH, SUMO_NET_PATH, SUMO_ROUTES_PATH, projectPath, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, EDGE_DATA_FILE_PATH
+from libraries.constants import SUMO_PATH, SUMO_NET_FILE_PATH, SUMO_ROUTES_PATH, projectPath, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, EDGE_DATA_FILE_PATH
 from libraries.utils import statisticUtils
 from libraries.utils.preprocessingUtils import generateEdgeDataFile
 
@@ -102,7 +102,7 @@ class DigitalTwinManager:
         Returns: returns the folder path in which simulations and results are stored.
         """
         basemodel = TrafficModeler(simulator=self.sumoSimulator, trafficDataFile=dataFilePath,
-                                   sumoNetFile=SUMO_NET_PATH,
+                                   sumoNetFile=SUMO_NET_FILE_PATH,
                                    date=date,
                                    timeSlot='00:00-01:00',
                                    modelType=macroModelType)

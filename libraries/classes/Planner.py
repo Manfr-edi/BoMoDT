@@ -8,7 +8,7 @@ from tkinter.filedialog import askopenfilename
 from libraries.classes.DataManager import *
 from libraries import constants
 from libraries.classes.SumoSimulator import Simulator
-from libraries.constants import SUMO_TOOLS_PATH, SUMO_NET_PATH
+from libraries.constants import SUMO_TOOLS_PATH, SUMO_NET_FILE_PATH, SUMO_ROUTES_PATH
 
 
 class ScenarioGenerator:
@@ -137,7 +137,7 @@ class ScenarioGenerator:
         else:
             print("No route file path was provided or selected.")
 
-    def generateRandomRoute(self, sumoNetPath: str, timeSlot: str):
+    def generateRandomRoute(self, sumoNetPath: str, timeSlot: str, custom: bool = True):
         """
         the function generates a set of routes for the map that can be used during the sampling phase
         Args:
@@ -151,10 +151,12 @@ class ScenarioGenerator:
         #folder_name = f"{date}_{modelType}_{carFollowingModelType}/{timeSlot}"
         #folder_path = os.path.join("sumoenv/", folder_name)
         folder_name = f"{timeSlot}"
-        folder_path = os.path.join("sumoenv/routes", folder_name)
+        #folder_path = os.path.join("sumoenv/routes", folder_name)
+        folder_path = os.path.join(SUMO_ROUTES_PATH, folder_name)
         os.makedirs(folder_path, exist_ok=True)
         script = SUMO_TOOLS_PATH + "/randomTrips.py"
-        subprocess.run(['python', script, "-n", sumoNetPath, "-r", folder_path + "/randomTrips.rou.xml",
+        if custom:
+            subprocess.run(['python', script, "-n", sumoNetPath, "-r", folder_path + "/randomTrips.rou.xml",
                         "--output-trip-file", folder_path + "/trips.rou.xml",
                         "--trip-attributes", "type='customModel'",
                         "--random-departpos", "--random-arrivalpos",
@@ -162,9 +164,17 @@ class ScenarioGenerator:
                         "--remove-loops",
                         "--fringe-factor", "10", "--min-distance", "100", "--max-distance", "2000",
                         "--random-routing-factor", "10", "--period", "0.1"])
+        else:
+            subprocess.run(['python', script, "-n", sumoNetPath, "-r", folder_path + "/randomTrips.rou.xml",
+                            "--output-trip-file", folder_path + "/trips.rou.xml",
+                            "--random-departpos", "--random-arrivalpos",
+                            "--allow-fringe", "--random",
+                            "--remove-loops",
+                            "--fringe-factor", "10", "--min-distance", "100", "--max-distance", "2000",
+                            "--random-routing-factor", "10", "--period", "0.1"])
 
 
-    def generateRoute(self, inputEdgePath: str, timeSlot: str, withInitialRoute=True, totalCount = 10000):
+    def generateRoute(self, inputEdgePath: str, timeSlot: str, withInitialRoute=True, totalCount = 10000, custom: bool = True):
         """
         Based on the input edgefile that contains the traffic counts detected by the specific traffic loops in the map,
         the function generates routes for the map (saved in :param sumoNetPath) that respect these crossing constraints
@@ -178,7 +188,7 @@ class ScenarioGenerator:
         """
         timeSlot = timeSlot.replace(':', '-')
         if withInitialRoute:
-            self.generateRandomRoute(sumoNetPath=SUMO_NET_PATH, timeSlot=timeSlot)
+            self.generateRandomRoute(sumoNetPath=SUMO_NET_FILE_PATH, timeSlot=timeSlot, custom=custom)
         #folder_name = f"{date}_{modelType}_{carFollowingModelType}/{timeSlot}"
         folder_name = f"{timeSlot}"
         #folder_path = os.path.join("sumoenv/", folder_name)
@@ -188,8 +198,9 @@ class ScenarioGenerator:
         random_route_path = folder_path
         outputRoutePath = folder_path + "/generatedRoutes.rou.xml"
         script = SUMO_TOOLS_PATH + "/routeSampler.py"
-        type = "type='customModel'"
-        process = subprocess.run([sys.executable, script, "--r", random_route_path + "/randomTrips.rou.xml",
+        if custom:
+            type = "type='customModel'"
+            process = subprocess.run([sys.executable, script, "--r", random_route_path + "/randomTrips.rou.xml",
                       "--edgedata-files", inputEdgePath, "-o",
                       outputRoutePath, "--edgedata-attribute", "qPKW",
                       "--write-flows", "number", "--attributes", type,
@@ -197,6 +208,17 @@ class ScenarioGenerator:
                       "--threads", "8", "--verbose"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
                      env=os.environ.copy(), bufsize=1)
+        else:
+            process = subprocess.run([sys.executable, script, "--r", random_route_path + "/randomTrips.rou.xml",
+                                      "--edgedata-files", inputEdgePath, "-o",
+                                      outputRoutePath, "--edgedata-attribute", "qPKW",
+                                      "--write-flows", "number",
+                                      "--total-count", str(totalCount), "--optimize", "full", "--minimize-vehicles",
+                                      "1",
+                                      "--threads", "8", "--verbose"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
+                                     env=os.environ.copy(), bufsize=1)
+
 
         # process.wait()
 
