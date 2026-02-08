@@ -1,7 +1,6 @@
 pandas==2.2.2
 ngsildclient==0.5.2
 requests~=2.32.3
-libtraci~=1.19.0
 traci~=1.20.0
 psycopg2==2.9.9
 geojson~=2.5.0
@@ -18,3 +17,4 @@ numpy~=2.2.0
 sumolib~=1.21.0
 shapely~=2.0.6
 torchrl==0.10.1
+libtraci

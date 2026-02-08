@@ -134,7 +134,7 @@ class Simulator:
         """
         Method to check if the simulation is running. Returns `True` if the simulation is running, `False` otherwise.
         """
-        return True if libtraci.simulation_isLoaded() and libtraci.simulation.getMinExpectedNumber() else False
+        return True if libtraci.simulation.isLoaded() and libtraci.simulation.getMinExpectedNumber() else False
 
     def startBasic(self, activeGui=False):
         """
@@ -497,21 +497,21 @@ class Simulator:
         program[0].phases[phase_index].maxDur = phase_duration
         program[0].phases[phase_index].minDur = phase_duration
         program[0].phases[phase_index].duration = phase_duration
-        libtraci.trafficlight_setProgramLogic(tl_id, program[0])
+        libtraci.trafficlight.setProgramLogic(tl_id, program[0])
         if verbose:
             print("TL with ID: " + str(tl_id) + " phase: " + str(phase_index) + " duration set to: " + str(phase_duration))
 
 
     def set_tls_phase_duration(self, tl_id, phase_id, phase_duration, verbose = False):
-        program = libtraci.trafficlight_getAllProgramLogics(tl_id)
+        program = libtraci.trafficlight.getAllProgramLogics(tl_id)
         phase_index = program[0].currentPhaseIndex
         phase = program[0].phases[phase_index]
 
         program[0].phases[phase_id].maxDur = phase_duration
         program[0].phases[phase_id].minDur = phase_duration
         program[0].phases[phase_id].duration = phase_duration
-        libtraci.trafficlight_setProgramLogic(tl_id, program[0])
-        program = libtraci.trafficlight_getAllProgramLogics(tl_id)
+        libtraci.trafficlight.setProgramLogic(tl_id, program[0])
+        program = libtraci.trafficlight.getAllProgramLogics(tl_id)
         if verbose:
             print("TL with ID: " + str(tl_id) + " phase: " + str(phase_id) + " duration set to: " + str(phase_duration))
 

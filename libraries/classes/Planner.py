@@ -1,5 +1,6 @@
 import os
 import sys
+from sys import platform
 import xml.etree.ElementTree as ET
 import subprocess
 from tkinter import Tk     # from tkinter import Tk for Python 3.x
@@ -8,7 +9,7 @@ from tkinter.filedialog import askopenfilename
 from libraries.classes.DataManager import *
 from libraries import constants
 from libraries.classes.SumoSimulator import Simulator
-from libraries.constants import SUMO_TOOLS_PATH, SUMO_NET_FILE_PATH, SUMO_ROUTES_PATH
+from libraries.constants import SUMO_TOOLS_PATH, SUMO_NET_FILE_PATH, SUMO_ROUTES_PATH, SUMO_TOOLS_PATH_UBUNTU
 
 
 class ScenarioGenerator:
@@ -154,7 +155,10 @@ class ScenarioGenerator:
         #folder_path = os.path.join("sumoenv/routes", folder_name)
         folder_path = os.path.join(SUMO_ROUTES_PATH, folder_name)
         os.makedirs(folder_path, exist_ok=True)
-        script = SUMO_TOOLS_PATH + "/randomTrips.py"
+        if platform == "linux" or platform == "linux2":
+            script = SUMO_TOOLS_PATH_UBUNTU + "/randomTrips.py"
+        else:
+            script = SUMO_TOOLS_PATH + "/randomTrips.py"
         if custom:
             subprocess.run(['python', script, "-n", sumoNetPath, "-r", folder_path + "/randomTrips.rou.xml",
                         "--output-trip-file", folder_path + "/trips.rou.xml",
@@ -197,7 +201,10 @@ class ScenarioGenerator:
         os.makedirs(folder_path, exist_ok=True)
         random_route_path = folder_path
         outputRoutePath = folder_path + "/generatedRoutes.rou.xml"
-        script = SUMO_TOOLS_PATH + "/routeSampler.py"
+        if platform == "linux" or platform == "linux2":
+            script = SUMO_TOOLS_PATH_UBUNTU + "/routeSampler.py"
+        else:
+            script = SUMO_TOOLS_PATH + "/routeSampler.py"
         if custom:
             type = "type='customModel'"
             process = subprocess.run([sys.executable, script, "--r", random_route_path + "/randomTrips.rou.xml",

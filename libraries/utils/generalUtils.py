@@ -8,6 +8,8 @@ import random
 
 from bson import ObjectId
 from pymongo import MongoClient
+from libraries import constants
+import json
 
 from libraries.classes.TrafficModeler import TrafficModeler
 from libraries.constants import SUMO_PATH, SUMO_NET_FILE_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH
@@ -197,3 +199,23 @@ def wait_for_mod_date_change(entry_id, old_mod_date, timeout=60, interval=1):
             return new_mod_date
         time.sleep(interval)  # Aspetta prima di ricontrollare
     return old_mod_date  # Timeout: ritorna il vecchio valore
+
+
+def count_entries_by_letter(letter, json_path=constants.TAZ_FILE):
+        """
+        Counts how many entries are associated with a given letter in the JSON file.
+
+        Parameters:
+            json_path (str): Path to the JSON file.
+            letter (str): Key letter to query (e.g., 'H', 'M', 'G').
+
+        Returns:
+            int: Number of entries for the given letter.
+        """
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+
+        if letter not in data:
+            raise ValueError(f"Letter '{letter}' not found in JSON file.")
+
+        return len(data[letter])

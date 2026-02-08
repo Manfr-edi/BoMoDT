@@ -4,6 +4,7 @@ import torch
 from tensordict.nn import TensorDictModule
 from torchrl.envs import GymEnv
 
+
 from libraries.classes.SumoSimulator import Simulator
 from libraries.classes.Planner import Planner
 from libraries.classes.DigitalTwinManager import DigitalTwinManager
@@ -224,7 +225,7 @@ if __name__ == "__main__":
     twinPlanner = Planner(simulator=sumoSimulator)
     timeslot = timeslot.replace(':', '-')
     timeslotPath = SUMO_PATH + "/routes/" + timeslot
-    #twinPlanner.scenarioGenerator.generateRoute(inputEdgePath=EDGE_DATA_FILE_PATH, timeSlot=timeslot, totalCount=5000, custom=False)
+    twinPlanner.scenarioGenerator.generateRoute(inputEdgePath=EDGE_DATA_FILE_PATH, timeSlot=timeslot, totalCount=5000, custom=False)
     routefolder_name = os.path.join(SUMO_PATH, 'routes')
     route_folder_path = os.path.join(routefolder_name, timeslot)
     os.makedirs(route_folder_path + '/output/', exist_ok=True)

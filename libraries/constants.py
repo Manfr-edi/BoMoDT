@@ -57,6 +57,7 @@ TAZ_ADDITIONAL_FILE_PATH = SUMO_PATH + "/static/output_taz.add.xml"
 
 
 SUMO_TOOLS_PATH = r"C:\Program Files (x86)\Eclipse\Sumo\tools"
+SUMO_TOOLS_PATH_UBUNTU = "/usr/share/sumo/tools"
 
 # Path where data for simulating different sumoenv scenario are collected.
 SCENARIO_COLLECTION_PATH = "sumoenv/scenarioCollection"
