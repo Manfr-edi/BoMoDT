@@ -88,9 +88,11 @@ class Simulator:
 
         os.environ["STATICPATH"] = SUMO_NETWORK_PATH
         self.listener = ValueListener()
-        libtraci.addStepListener(self.listener)
+        # Registering many listeners across recreated Simulator instances may leak resources.
+        # Keep the listener object available but do not auto-register it here.
 
-    def start(self, activeGui: bool = False, logFilePath: Optional[str] = None, noWarnings: bool = False, continuous: bool = False, rl_mode: bool = False):
+    def start(self, activeGui: bool = False, logFilePath: Optional[str] = None, noWarnings: bool = True,
+              continuous: bool = False, rl_mode: bool = False, traceCommands: bool = False):
         """
         Start the SUMO environment simulation, with or without the GUI, based on the `activeGui` parameter.
         If a simulation is already loaded, it will be overwritten.
@@ -100,9 +102,10 @@ class Simulator:
         :param logFilePath: Optional path to a log file. If specified, the log file is used for the SUMO trace.
         :raises RuntimeError: If there is an issue starting the SUMO simulation.
         """
-        # Check for any existing loaded simulation and warn if it exists
+        # Always close any previously loaded simulation before starting a new one.
         if libtraci.simulation.isLoaded():
-            print("Warning: A previous simulation was loaded. It will be overwritten.")
+            print("Warning: A previous simulation was loaded. Closing it before restart.")
+            self.end()
 
         # Construct the command for starting SUMO or SUMO-GUI
         sumo_command = "sumo-gui" if activeGui else "sumo"
@@ -122,8 +125,11 @@ class Simulator:
         # Set the log file path if specified
         self.logFile = logFilePath if logFilePath else self.logFile
 
-        # Start the simulation with the specified command and log file
-        libtraci.start(command, traceFile=self.logFile)
+        # Start the simulation. TraCI command tracing can become huge; keep it optional.
+        if traceCommands:
+            libtraci.start(command, traceFile=self.logFile)
+        else:
+            libtraci.start(command)
         print("Note: Each simulation step is equivalent to " + str(libtraci.simulation.getDeltaT()) + " seconds.")
 
         if continuous:
@@ -135,6 +141,12 @@ class Simulator:
         Method to check if the simulation is running. Returns `True` if the simulation is running, `False` otherwise.
         """
         return True if libtraci.simulation.isLoaded() and libtraci.simulation.getMinExpectedNumber() else False
+
+    def isLoaded(self) -> bool:
+        """
+        Returns True when a TraCI simulation is currently loaded.
+        """
+        return libtraci.simulation.isLoaded()
 
     def startBasic(self, activeGui=False):
         """
@@ -171,20 +183,36 @@ class Simulator:
 
     def step(self, quantity=1):
         """
-        Executes a defined number of steps in the simulation (by default one step).
+        Executes a defined number of simulation steps.
         Typically, one step corresponds to one second of simulation time.
 
-        :param quantity: The number of steps to execute. Default is 1.
-        :raises RuntimeError: If the simulation encounters an issue during stepping.
+        For large `quantity`, a batched TraCI step is attempted first to reduce
+        Python-call overhead. If that fails, it falls back to iterative stepping.
+
+        :param quantity: Number of simulation steps to execute.
         """
+        qty = int(quantity)
+        if qty <= 0:
+            return
+        if self.getRemainingVehicles() <= 0:
+            return
+
+        # Fast path: advance directly to target simulation time in a single call.
+        # This is much faster than 100s of Python->TraCI calls per env step.
+        if qty > 1:
+            try:
+                current_time = float(libtraci.simulation.getTime())
+                delta_t = float(libtraci.simulation.getDeltaT())
+                target_time = current_time + qty * delta_t
+                libtraci.simulationStep(target_time)
+                return
+            except Exception:
+                pass
+
+        # Fallback path: iterative stepping.
         step = 0
-        while step < quantity and self.getRemainingVehicles() > 0:
+        while step < qty and self.getRemainingVehicles() > 0:
             libtraci.simulationStep()
-            # self.vehiclesSummary = self.getVehiclesSummary()
-            # self.checkSubscription()
-            # self.getInductionLoopSummary()
-            # # self.setTLSProgram("219", "utopia")
-            # print(self.getRemainingVehicles())
             step += 1
 
     def oneHourStep(self):
@@ -215,7 +243,14 @@ class Simulator:
         :return: True if the connection was successfully closed, False otherwise.
         :raises RuntimeError: If there is an issue closing the connection.
         """
-        return libtraci.close()
+        if not libtraci.simulation.isLoaded():
+            return False
+        try:
+            libtraci.close()
+            return True
+        except Exception as e:
+            print(f"[WARN] Error while closing SUMO/TraCI session: {e}")
+            return False
 
     def getRemainingVehicles(self):
         """
@@ -510,7 +545,8 @@ class Simulator:
         program[0].phases[phase_id].maxDur = phase_duration
         program[0].phases[phase_id].minDur = phase_duration
         program[0].phases[phase_id].duration = phase_duration
-        libtraci.trafficlight.setProgramLogic(tl_id, program[0])
+        libtraci.trafficlight_setProgramLogic(tl_id, program[0])
+        #libtraci.trafficlight.setProgramLogic(tl_id, program[0])
         program = libtraci.trafficlight.getAllProgramLogics(tl_id)
         if verbose:
             print("TL with ID: " + str(tl_id) + " phase: " + str(phase_id) + " duration set to: " + str(phase_duration))
@@ -594,7 +630,7 @@ class Simulator:
         data = []
         for det in dets:
             n = libtraci.lanearea.getIntervalVehicleNumber(det)
-            speed = libtraci.lanearea.getLastStepMeanSpeed(det)
+            speed = libtraci.lanearea.getIntervalMeanSpeed(det)
             max_jam_length = libtraci.lanearea.getIntervalMaxJamLengthInMeters(det)
             occupancy = libtraci.lanearea.getIntervalOccupancy(det)
 

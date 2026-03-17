@@ -18,6 +18,20 @@ from libraries.utils.generalUtils import *
 taz_id = "H"
 tls_number = count_entries_by_letter(letter=taz_id, json_path=constants.TAZ_FILE)
 
+HOURLY_DEMAND_PROFILE = {
+    0: 0.2, 1: 0.15, 2: 0.1, 3: 0.1, 4: 0.2,
+    5: 0.4, 6: 0.7, 7: 1.2, 8: 1.5,
+    9: 1.0, 10: 0.8, 11: 0.9,
+    12: 1.1, 13: 1.0,
+    14: 0.9, 15: 1.0,
+    16: 1.3, 17: 1.6, 18: 1.4,
+    19: 1.0, 20: 0.8,
+    21: 0.6, 22: 0.4, 23: 0.3
+}
+
+REFERENCE_TLS = tls_number
+BASE_DEMAND = 5000
+
 
 class ActorCriticNetwork(nn.Module):
     """Actor-Critic network for PPO training"""
@@ -39,6 +53,9 @@ class ActorCriticNetwork(nn.Module):
         )
         self.mean_head = nn.Linear(32, act_dim)
         self.log_std = nn.Parameter(torch.zeros(act_dim))
+
+        nn.init.orthogonal_(self.mean_head.weight, gain=0.01)
+        nn.init.constant_(self.mean_head.bias, 0.0)
 
         # CRITIC head (value function)
         self.critic_head = nn.Sequential(
@@ -95,12 +112,13 @@ env = SumoTazEnv(
 )
 
 # PPO Hyperparameters
-n_epochs = 10
+n_epochs = 50
+start_epoch = 0
 n_episodes = 24
 gamma = 0.99
 gae_lambda = 0.95  # GAE (Generalized Advantage Estimation) parameter
 ppo_clip_ratio = 0.2  # Clipping parameter for PPO
-ppo_epochs = 3  # Number of PPO update epochs per episode batch
+ppo_epochs = 10  # Number of PPO update epochs per episode batch
 entropy_coef = 0.01  # Entropy coefficient for exploration
 
 base_datetime = datetime(2024, 2, 1)
@@ -130,7 +148,7 @@ training_history = []
 # Model loading
 loading_model = False
 if loading_model:
-    checkpoint = torch.load("checkpoint_ppo.pt", weights_only=True)
+    checkpoint = torch.load("checkpoint_ppo_epoch39.pt", weights_only=True)
     policy.load_state_dict(checkpoint['model_state_dict'])
     optim.load_state_dict(checkpoint['optimizer_state_dict'])
     start_epoch = checkpoint.get('epoch', 0) + 1
@@ -208,9 +226,9 @@ def ppo_update(policy, optimizer, batch_obs, batch_actions, batch_log_probs_old,
     
     return avg_ppo_loss, avg_clip_fraction, policy_loss.item(), critic_loss.item()
 
-
+epoch = start_epoch
 # ==================== TRAINING LOOP ====================
-for epoch in range(n_epochs):
+for epoch in range(start_epoch,n_epochs):
     # Change date for each epoch
     current_date = base_datetime + timedelta(days=epoch)
     simulation_date = current_date.strftime('%Y-%m-%d')
@@ -233,10 +251,19 @@ for epoch in range(n_epochs):
         route_folder_path = os.path.join(SUMO_PATH, 'routes', timeslot_clean)
         os.makedirs(route_folder_path + '/output/', exist_ok=True)
 
+        hour_multiplier = HOURLY_DEMAND_PROFILE[hour]
+
+        crossing_multiplier = tls_number / REFERENCE_TLS
+
+        total_cars = int(BASE_DEMAND * hour_multiplier * crossing_multiplier)
+
+        noise = random.uniform(0.9, 1.1)
+        total_cars_random = int(total_cars * noise)
+        print("Number of cars generated for this episode:" + str(total_cars_random) + "\n")
         twinPlanner.scenarioGenerator.generateRoute(
             inputEdgePath=EDGE_DATA_FILE_PATH,
             timeSlot=timeslot_clean,
-            totalCount=5000,
+            totalCount=total_cars_random,
             custom=False
         )
         sumo.changeTypePath(typePath=route_folder_path)
@@ -245,8 +272,10 @@ for epoch in range(n_epochs):
         td = env.reset()
         print(f"[EPISODE START] epoch={epoch} episode={episode}")
 
+
         # ==================== TRAJECTORY COLLECTION ====================
         # PPO collects full trajectories before updating
+        obs_list = []
         trajectories = []
         log_probs_list = []
         rewards_list = []
@@ -255,6 +284,7 @@ for epoch in range(n_epochs):
 
         while True:
             obs = td["observation"]
+            obs_list.append(obs)
 
             # Get action, log_prob, and value
             with torch.no_grad():
@@ -275,9 +305,10 @@ for epoch in range(n_epochs):
             print(f"[OBS] obs norm={obs.norm().item():.3f}")
 
             reward = td["next", "reward"].detach()
+            print(f"[RAW REWARD] {reward.item()}")
             rewards_list.append(reward)
 
-            if episode == 0 and epoch == 0:
+            if episode == 0 and epoch == 0 or loading_model:
                 print(f"[DEBUG] reward={reward.item():.3f}")
                 print(f"[DEBUG] action_mean={action.mean().item():.3f}")
                 fixed_obs = obs.clone()
@@ -287,9 +318,34 @@ for epoch in range(n_epochs):
 
             td = td["next"]
 
+        # ==================== FILTER WARMUP/COOLDOWN STEPS ====================
+        valid_indices = []
+        for i in range(len(rewards_list)):
+            step_num = i + 1
+            if step_num > env.warmupSteps and step_num < env.cooldownSteps:
+                valid_indices.append(i)
+
+        # Check if we have valid steps
+        if len(valid_indices) == 0:
+            print(f"[WARNING] No valid steps after filtering warmup/cooldown. Skipping episode.")
+            continue
+
+        # Filter all lists to only include valid steps
+        obs_list = [obs_list[i] for i in valid_indices]
+        actions_list = [actions_list[i] for i in valid_indices]
+        log_probs_list = [log_probs_list[i] for i in valid_indices]
+        rewards_list = [rewards_list[i] for i in valid_indices]
+        values_list = [values_list[i] for i in valid_indices]
+
         # ==================== ADVANTAGE & RETURN CALCULATION ====================
         # Clamp rewards for stability
-        rewards_list = [r.clamp(-1, 1) for r in rewards_list]
+        #rewards_list = [r.clamp(-1, 1) for r in rewards_list] - THIS IS TOO AGGRESSIVE
+        # rewards_tensor = torch.stack(rewards_list)
+        # rewards_mean = rewards_tensor.mean()
+        # rewards_std = rewards_tensor.std() + 1e-8
+        # rewards_list = [(r - rewards_mean) / rewards_std for r in rewards_list]
+
+
         rewards_tensor = torch.stack(rewards_list)
         episode_reward = rewards_tensor.sum()
         epoch_reward += episode_reward
@@ -308,8 +364,8 @@ for epoch in range(n_epochs):
             returns.insert(0, G)
         returns_tensor = torch.tensor(returns, dtype=torch.float32)
 
-        # Normalize returns
-        returns_tensor = (returns_tensor - returns_tensor.mean()) / (returns_tensor.std() + 1e-8)
+        # Normalize returns - THIS MAY BE NOT USEFUL SINCE ADVANTAGE IS NORMALIZED
+        # returns_tensor = (returns_tensor - returns_tensor.mean()) / (returns_tensor.std() + 1e-8)
 
         # Compute GAE (better advantage estimation)
         advantages = compute_gae(rewards_list, values_tensor.detach(), gamma=gamma, lambda_=gae_lambda)
@@ -317,15 +373,18 @@ for epoch in range(n_epochs):
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+        obs_tensor = torch.stack(obs_list)
+
         # ==================== PPO UPDATE ====================
         ppo_loss, clip_fraction, actor_loss, critic_loss = ppo_update(
             policy,
             optim,
-            obs.unsqueeze(0),  # Add batch dimension
-            actions_tensor.unsqueeze(0),
-            log_probs_tensor.unsqueeze(0),
-            advantages.unsqueeze(0),
-            returns_tensor.unsqueeze(0),
+            #obs.unsqueeze(0),  # Add batch dimension
+            obs_tensor,
+            actions_tensor,
+            log_probs_tensor,
+            advantages,
+            returns_tensor,
             clip_ratio=ppo_clip_ratio,
             ppo_epochs=ppo_epochs,
             entropy_coef=entropy_coef

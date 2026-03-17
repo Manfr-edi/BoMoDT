@@ -20,6 +20,7 @@
 		<summary-output value="${TYPEPATH}/output/summary.xml" />
 		<!--<queue-output value="../../${TYPEPATH}/output/queue.xml" /> -->
 		<edgedata-output value="${TYPEPATH}/output/edgedata-output.xml" />
+		<emission-output value="${TYPEPATH}/output/emission-output.xml" />
     </output>
 
     <report>
@@ -33,10 +34,10 @@
 
 
     <processing>  
-		<threads value="4" />
+		<!-- <threads value="8" /> -->
 		<!--<route-steps value="500" /> -->
         <!-- <ignore-route-errors value="true"/>  IGNORA PERCORSI CON ERRORI  -->
-        <time-to-teleport value="3"/> <!-- DISABILITA TELETRASPORTO -->  
+        <!--<time-to-teleport value="10"/>  DISABILITA TELETRASPORTO -->  
 		<ignore-junction-blocker value="1"/> <!-- NON ASPETTARE DI ENTRARE NELLA ROTONDA/INCROCIO SE LA STRADA è LIBERA --> 
     </processing> 
 	

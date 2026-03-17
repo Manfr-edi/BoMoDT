@@ -2,6 +2,15 @@ import pandas as pd
 import numpy as np
 
 def aggregate_tls_metrics(detector_records):
+    if not detector_records:
+        return {
+            "veh_total": 0.0,
+            "mean_speed": 0.0,
+            "mean_occupancy": 0.0,
+            "max_jam": 0.0,
+            "pressure": 0.0
+        }
+
     veh_total = sum(r["nVeh"] for r in detector_records)
 
     if veh_total > 0:
@@ -25,9 +34,21 @@ def aggregate_tls_metrics(detector_records):
 
 
 def aggregate_taz_metrics(tls_metrics):
+    if not tls_metrics:
+        return {
+            "veh_total": 0.0,
+            "mean_occupancy": 0.0,
+            "max_occupancy": 0.0,
+            "std_occupancy": 0.0,
+            "mean_speed": 0.0,
+            "critical_ratio": 0.0,
+            "max_jam_len": 0.0
+        }
+
     veh_totals = [m["veh_total"] for m in tls_metrics]
     occupancies = [m["mean_occupancy"]/100 for m in tls_metrics]
     speeds = [m["mean_speed"] for m in tls_metrics]
+    max_jam_values = [m.get("max_jam", 0.0) for m in tls_metrics]
 
     total_veh = sum(veh_totals)
 
@@ -42,7 +63,8 @@ def aggregate_taz_metrics(tls_metrics):
         "max_occupancy": max(occupancies),
         "std_occupancy": pd.Series(occupancies).std(),
         "mean_speed": mean_speed,
-        "critical_ratio": sum(o > 0.7 for o in occupancies) / len(occupancies)
+        "critical_ratio": sum(o > 0.7 for o in occupancies) / len(occupancies),
+        "max_jam_len": max(max_jam_values)
     }
 
 

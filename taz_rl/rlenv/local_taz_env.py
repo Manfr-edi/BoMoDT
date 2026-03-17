@@ -4,7 +4,6 @@ import torch
 from tensordict.nn import TensorDictModule
 from torchrl.envs import GymEnv
 
-
 from libraries.classes.SumoSimulator import Simulator
 from libraries.classes.Planner import Planner
 from libraries.classes.DigitalTwinManager import DigitalTwinManager
@@ -20,7 +19,6 @@ from tensordict import TensorDict
 import numpy as np
 
 
-
 class SumoTazEnv(EnvBase):
     """
     Class representing SUMO environment for a single Traffic Analysis Zone (TAZ).
@@ -32,7 +30,8 @@ class SumoTazEnv(EnvBase):
     - warmupSteps: number of warmup steps to take before start evaluating observation.
     - cooldownSteps: number of cooldown steps to take after which observations are not evaluated anymore.
     """
-    def __init__(self, sumoSimulator, tazID, stepSize= 300, warmupSteps = 2, cooldownSteps = 15, device="cpu"):
+
+    def __init__(self, sumoSimulator, tazID, stepSize=300, warmupSteps=2, cooldownSteps=15, device="cpu"):
         super().__init__(device=device)
         self.sumo = sumoSimulator
         self.tazID = tazID
@@ -61,11 +60,15 @@ class SumoTazEnv(EnvBase):
         self.observation_spec = UnboundedContinuousTensorSpec(shape=(state_dim,))
         self.reward_spec = UnboundedContinuousTensorSpec(shape=(1,))
 
+        # FIXED: Initialize previous state with reasonable defaults instead of 0
         self.prev_nVeh = 0
-        self.prev_mean_speed = 0
-        self.prev_critical_ratio = 0
+        self.prev_mean_speed = 10.0  # Typical urban speed (km/h)
+        self.prev_critical_ratio = 0.1  # Small but non-zero
         self.prev_max_jam_len = 0
-        self.prev_occupancy = 0
+        self.prev_occupancy = 0.1  # Small but non-zero
+
+        # ADDED: Reward component tracking for debugging
+        self.last_reward_components = {}
 
     def _get_state_vector(self):
         """
@@ -87,7 +90,7 @@ class SumoTazEnv(EnvBase):
             time_to_switch = libtraci.trafficlight.getNextSwitch(tls) - libtraci.simulation.getTime()
 
             elapsed = phase_duration - time_to_switch
-            phase_progress = elapsed / phase_duration
+            phase_progress = elapsed / phase_duration if phase_duration > 0 else 0.0  # FIXED: Added safety check
             dets = raw["tls_data"].get(tls, [])
             # The phase progress can be added if needed
             phase_data = {"phaseID": current_phase, "phase_duration": phase_duration}
@@ -109,11 +112,11 @@ class SumoTazEnv(EnvBase):
                 float(m.get("occupancy", 0)),
             ])
         taz_features = [
-                taz_metrics.get("veh_total", 0),
-                taz_metrics.get("mean_speed", 0),
-                taz_metrics.get("critical_ratio", 0),
-                taz_metrics.get("mean_occupancy", 0),
-            ]
+            taz_metrics.get("veh_total", 0),
+            taz_metrics.get("mean_speed", 0),
+            taz_metrics.get("critical_ratio", 0),
+            taz_metrics.get("mean_occupancy", 0),
+        ]
         obs.extend(taz_features)
 
         return torch.tensor(obs, dtype=torch.float32, device=self.device)
@@ -130,26 +133,31 @@ class SumoTazEnv(EnvBase):
         base = phase.duration
         # delta = int(action_value * 10)  # max ±10s
         new_dur = int(np.clip(base + action_value, 10, 60))
-        self.sumo.set_tls_phase_duration(tls_id, phase_id ,new_dur)
-
+        self.sumo.set_tls_phase_duration(tls_id, phase_id, new_dur)
 
     def _set_seed(self, seed: int):
-        """Setta il seed dell’environment."""
+        """Setta il seed dell'environment."""
         self.rng.manual_seed(seed)
         return seed
 
     # -------------------------------------------------
 
     def _reset(self, tensordict=None, **kwargs):
-        if self.sumo.isRunning():
+        if self.sumo.isLoaded():
             self.sumo.end()
         self.sumo.start(activeGui=False, logFilePath=self.sumo.logFile, rl_mode=True)
         self.current_step = 0
-        self.prev_speed = None
+
         obs = self._get_state_vector()
-        self.prev_mean_speed = obs[-3].item()
-        self.prev_critical_ratio = obs[-2].item()
-        self.prev_occupancy = obs[-1].item()
+
+        # FIXED: Initialize previous state with current observations or safe defaults
+        self.prev_mean_speed = max(obs[-3].item(), 1.0)  # At least 1.0 to prevent division issues
+        self.prev_critical_ratio = max(obs[-2].item(), 0.01)  # At least 0.01
+        self.prev_occupancy = max(obs[-1].item(), 0.01)  # At least 0.01
+
+        # ADDED: Reset reward tracking
+        self.last_reward_components = {}
+
         return TensorDict({"observation": obs}, batch_size=[])
 
     def _step(self, tensordict):
@@ -165,15 +173,17 @@ class SumoTazEnv(EnvBase):
         self.sumo.step(quantity=self.stepSize)
         self.current_step += 1
         if not self.sumo.isRunning() or self.current_step >= self.cooldownSteps:
+            if self.sumo.isLoaded():
+                self.sumo.end()
             return TensorDict(
                 {
                     "observation": torch.zeros(
                         self.observation_spec.shape,
                         device=self.device
                     ),
-                    "reward": torch.zeros(1, device=self.device),
-                    "terminated": torch.tensor([True], device=self.device),
-                    "truncated": torch.tensor([False], device=self.device),
+                    "reward": torch.tensor(0.0, dtype=torch.float32, device=self.device),
+                    "terminated": torch.tensor(True, device=self.device),
+                    "truncated": torch.tensor(False, device=self.device),
                 },
                 batch_size=[]
             )
@@ -183,28 +193,70 @@ class SumoTazEnv(EnvBase):
         mean_speed = obs[-3].item()
         critical_ratio = obs[-2].item()
         mean_occupancy = obs[-1].item()
-        if self.current_step <= self.warmupSteps or total_vehicles < 5:
-            reward = 0  # ignora reward durante warm-up
+
+        if self.current_step <= self.warmupSteps:
+            reward = 0.0
+            self.last_reward_components = {
+                "speed_improvement": 0.0,
+                "occupancy_reduction": 0.0,
+                "critical_reduction": 0.0,
+                "total": 0.0,
+                "warmup": True
+            }
         else:
             if total_vehicles > 0:
-                traffic_level = total_vehicles / 100
-                speed_improvement = (mean_speed - self.prev_mean_speed) / (self.prev_mean_speed + 1e-6)
-                occupancy_reduction = -(mean_occupancy - self.prev_occupancy) / (self.prev_occupancy + 1e-6)
-                critical_reduction = -2 * (critical_ratio - self.prev_critical_ratio) / (self.prev_critical_ratio + 1e-6)
-                reward = speed_improvement + occupancy_reduction + critical_reduction
-                reward = reward * (1 + traffic_level)
-            else:
-                reward = 0
+                # FIXED: Use max() to prevent division by near-zero values
+                # This prevents the reward explosion when prev values are very small
+                speed_improvement = (mean_speed - self.prev_mean_speed) / max(self.prev_mean_speed, 1.0)
+                occupancy_reduction = -(mean_occupancy - self.prev_occupancy) / max(self.prev_occupancy, 0.1)
+                critical_reduction = -2.0 * (critical_ratio - self.prev_critical_ratio) / max(self.prev_critical_ratio,
+                                                                                              0.05)
 
-        self.prev_mean_speed = mean_speed
-        self.prev_critical_ratio = critical_ratio
-        self.prev_occupancy = mean_occupancy
+                # ADDED: Clip individual components to prevent any single one from dominating
+                #speed_improvement = np.clip(speed_improvement, -10.0, 10.0)
+                #occupancy_reduction = np.clip(occupancy_reduction, -10.0, 10.0)
+                #critical_reduction = np.clip(critical_reduction, -20.0, 20.0)
+
+                reward = speed_improvement + occupancy_reduction + critical_reduction
+
+                # ADDED: Final safety clip (should rarely trigger with the fixes above)
+                #reward = np.clip(reward, -50.0, 50.0)
+
+                # ADDED: Store components for debugging
+                self.last_reward_components = {
+                    "speed_improvement": float(speed_improvement),
+                    "occupancy_reduction": float(occupancy_reduction),
+                    "critical_reduction": float(critical_reduction),
+                    "total": float(reward),
+                    "mean_speed": mean_speed,
+                    "prev_mean_speed": self.prev_mean_speed,
+                    "critical_ratio": critical_ratio,
+                    "prev_critical_ratio": self.prev_critical_ratio,
+                    "occupancy": mean_occupancy,
+                    "prev_occupancy": self.prev_occupancy,
+                    "warmup": False
+                }
+            else:
+                reward = 0.0
+                self.last_reward_components = {
+                    "speed_improvement": 0.0,
+                    "occupancy_reduction": 0.0,
+                    "critical_reduction": 0.0,
+                    "total": 0.0,
+                    "no_vehicles": True
+                }
+
+        # FIXED: Update previous state with safe minimum values
+        self.prev_mean_speed = max(mean_speed, 1.0)
+        self.prev_critical_ratio = max(critical_ratio, 0.01)
+        self.prev_occupancy = max(mean_occupancy, 0.01)
+
         return TensorDict(
             {
                 "observation": obs,
-                "reward": torch.tensor([reward]),
-                "terminated": torch.tensor([False]),
-                "truncated": torch.tensor([False])
+                "reward": torch.tensor(reward, dtype=torch.float32, device=self.device),
+                "terminated": torch.tensor(False, device=self.device),
+                "truncated": torch.tensor(False, device=self.device)
             },
             batch_size=[]
         )
@@ -219,13 +271,14 @@ if __name__ == "__main__":
     configurationPath = SUMO_PATH + "/standalone"
     logFile = SUMO_PATH + "/standalone/command_log.txt"
     sumoSimulator = Simulator(configurationPath=configurationPath, logFile=logFile, tazTlsMapFile=TAZ_FILE)
-    taz_id = "H"   # esempio
+    taz_id = "H"  # esempio
     sumoSimulator.changeDetectorPath(detectorPath=SUMO_NETWORK_PATH)
 
     twinPlanner = Planner(simulator=sumoSimulator)
     timeslot = timeslot.replace(':', '-')
     timeslotPath = SUMO_PATH + "/routes/" + timeslot
-    twinPlanner.scenarioGenerator.generateRoute(inputEdgePath=EDGE_DATA_FILE_PATH, timeSlot=timeslot, totalCount=5000, custom=False)
+    twinPlanner.scenarioGenerator.generateRoute(inputEdgePath=EDGE_DATA_FILE_PATH, timeSlot=timeslot, totalCount=5000,
+                                                custom=False)
     routefolder_name = os.path.join(SUMO_PATH, 'routes')
     route_folder_path = os.path.join(routefolder_name, timeslot)
     os.makedirs(route_folder_path + '/output/', exist_ok=True)
@@ -233,17 +286,17 @@ if __name__ == "__main__":
     print(route_folder_path)
     sumoSimulator.changeRouteFilePath(route_folder_path)
 
-
     env = SumoTazEnv(sumoSimulator, tazID=taz_id, device="cpu")
 
     td = env.reset()
     # env.sumo.step(100)
 
-    #for _ in range(10):
+    # for _ in range(10):
+    step_count = 0
     while True:
         # azione random: durations
         action = env.action_spec.rand()
-        #td = env.step(action)
+        # td = env.step(action)
         td = env.step(
             TensorDict(
                 {"action": action},
@@ -251,8 +304,17 @@ if __name__ == "__main__":
             )
         )
 
-        print("Reward:", td["next", "reward"].item())
+        print(f"Step {step_count}: Reward:", td["next", "reward"].item())
+
+        # ADDED: Print reward components for debugging
+        if hasattr(env, 'last_reward_components'):
+            components = env.last_reward_components
+            if not components.get('warmup', False) and not components.get('no_vehicles', False):
+                print(f"  Speed improvement: {components['speed_improvement']:.4f}")
+                print(f"  Occupancy reduction: {components['occupancy_reduction']:.4f}")
+                print(f"  Critical reduction: {components['critical_reduction']:.4f}")
+
+        step_count += 1
 
         if td["next", "terminated"].item():
             break
-
