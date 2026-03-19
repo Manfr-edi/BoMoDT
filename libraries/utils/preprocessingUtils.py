@@ -189,6 +189,7 @@ def mapDetectorsFromCoordinates(sumoNetFile: str, detectorCoordinatesPath: str, 
     """
     print("starting to map the detector using geospatial coordinates...")
     script = SUMO_TOOLS_PATH + "/detector/mapDetectors.py"
+    script = SUMO_TOOLS_PATH_UBUNTU + "/detector/mapDetectors.py"
     command = [
         sys.executable,
         script,

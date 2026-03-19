@@ -1,4 +1,3 @@
-# training_script_ppo_v7.py
 import csv
 import json
 import math
@@ -19,20 +18,17 @@ from libraries.classes.Planner import Planner
 from libraries.classes.SumoSimulator import Simulator
 from libraries.constants import EDGE_DATA_FILE_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, SUMO_PATH
 from libraries.utils.preprocessingUtils import generateEdgeDataFile
-from taz_rl.rlenv.local_taz_env_v7 import SumoTazEnvV7
+from taz_rl.rlenv.local_taz_env_v9 import SumoTazEnvV9
+
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ==================== CONFIG ====================
-TRAIN_START_DATE = datetime(2024, 2, 1)
+TRAIN_START_DATE = datetime(2024, 2, 2)
 N_TRAIN_DAYS = 200
 FOCUS_HOURS = [8]
 TRAIN_ON_SAME_DAY = True
-# Reward mode:
-# - False: train with one simulation (absolute reward from that episode)
-# - True: train with delta reward vs no-agent baseline each episode
-USE_BASELINE_COMPARISON_REWARD = False
-# If training uses single-simulation reward, run no-agent baseline only every N episodes for logging.
-BASELINE_EVAL_EVERY = 10
 
 HOURLY_DEMAND_PROFILE = {
     0: 0.2, 1: 0.15, 2: 0.1, 3: 0.1, 4: 0.2,
@@ -49,40 +45,37 @@ REUSE_DETERMINISTIC_ROUTE_FILES = True
 ROUTE_RANDOM_TRIP_SEED = 42
 ROUTE_SAMPLER_SEED = 42
 ROUTE_SAMPLER_THREADS = 1
-ROUTE_CACHE_ROOT = os.path.join(SUMO_PATH, "routes_v7_deterministic")
+ROUTE_CACHE_ROOT = os.path.join(SUMO_PATH, "routes_v9_deterministic")
+LEGACY_ROUTE_CACHE_ROOTS = [
+    os.path.join(SUMO_PATH, "routes_v8_deterministic"),
+    os.path.join(SUMO_PATH, "routes_v7_deterministic"),
+]
 
-ENV_V7_CONFIG = dict(
+ENV_V9_CONFIG = dict(
     speed_norm=10.0,
     jam_norm=10.0,
     warmupSteps=0,
     cooldownSteps=12,
-    min_green=10,
-    max_green=300,
-    time_loss_weight=0.65,
-    emission_weight=0.25,
-    jam_weight=0.10,
-    emission_co2_mix_weight=0.34,
-    emission_nox_mix_weight=0.33,
-    emission_fuel_mix_weight=0.33,
-    time_loss_ref=2500000.0,
-    co2_ref=11000000000.0,
-    nox_ref=4000000.0,
-    fuel_ref=3600000000.0,
-    max_jam_len_ref=120.0,
-    metric_clip=5.0,
-    reward_clip=5.0,
-    comparison_reward_enabled=USE_BASELINE_COMPARISON_REWARD,
-    live_vehicle_sample=4096,
-    active_vehicle_ref=2500.0,
-    waiting_ref=60.0,
-    vehicle_time_loss_ref=120.0,
-    emission_vehicle_co2_ref=3500.0,
-    emission_vehicle_nox_ref=1.5,
-    emission_vehicle_fuel_ref=1200.0,
+    min_green=25,
+    max_green=120,
+    reward_clip=2.0,
+    waiting_reward_weight=0.35,
+    emission_reward_weight=0.30,
+    jam_reward_weight=0.35,
+    emission_co2_mix_weight=0.50,
+    emission_nox_mix_weight=0.50,
+    tls_waiting_time_ref=1000.0,
+    tls_co2_ref=80000.0,
+    tls_nox_ref=40.0,
+    tls_active_vehicle_ref=80.0,
+    taz_waiting_time_ref=6000.0,
+    taz_co2_ref=300000.0,
+    taz_nox_ref=150.0,
     tls_veh_total_ref=120.0,
     tls_pressure_ref=10000.0,
     taz_veh_total_ref=2500.0,
     taz_std_occupancy_ref=0.25,
+    max_jam_len_ref=120.0,
 )
 
 # PPO
@@ -97,15 +90,15 @@ VALUE_COEF = 0.3
 MAX_GRAD_NORM = 0.5
 TARGET_KL = 0.06
 PPO_UPDATE_EPOCHS = 6
-MINIBATCH_SIZE = 32
-ACTION_LIMIT = 20.0
+MINIBATCH_SIZE = 64
+ACTION_LIMIT = 15.0
 
 EXTRACTOR_HIDDEN = 256
 EXTRACTOR_OUT = 128
 
 # Checkpoints
 LOAD_MODEL = False
-CHECKPOINT_PATH = os.path.join("checkpoints_v7", "checkpoint_ppo_v7_final.pt")
+CHECKPOINT_PATH = os.path.join(SCRIPT_DIR, "checkpoints_v9", "checkpoint_ppo_v9_final.pt")
 RESUME_FROM_CHECKPOINT_EPISODE = True
 START_EPISODE_OVERRIDE = None
 
@@ -128,8 +121,8 @@ class FeatureExtractor(nn.Module):
         return self.net(obs)
 
 
-class ActorCriticV7(nn.Module):
-    def __init__(self, obs_dim: int, act_dim: int, action_limit: float = 20.0):
+class ActorCriticV9(nn.Module):
+    def __init__(self, obs_dim: int, act_dim: int, action_limit: float = 15.0):
         super().__init__()
         self.action_limit = float(action_limit)
         self.extractor = FeatureExtractor(obs_dim, hidden_dim=EXTRACTOR_HIDDEN, out_dim=EXTRACTOR_OUT)
@@ -154,14 +147,22 @@ class ActorCriticV7(nn.Module):
         nn.init.orthogonal_(self.mean_head.weight, gain=0.01)
         nn.init.constant_(self.mean_head.bias, 0.0)
 
-    def forward(self, obs):
+    @staticmethod
+    def _mask_to_float(action_mask: torch.Tensor | None, ref: torch.Tensor) -> torch.Tensor:
+        if action_mask is None:
+            return torch.ones_like(ref)
+        return action_mask.to(dtype=ref.dtype, device=ref.device)
+
+    def forward(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
         feat = self.extractor(obs)
         mean = self.mean_head(self.actor(feat))
-        std = torch.exp(self.log_std).clamp(0.05, 1.5)
+        mask = self._mask_to_float(action_mask, mean)
+        mean = mean * mask
+        std = torch.exp(self.log_std).clamp(0.05, 1.5).unsqueeze(0).expand_as(mean)
         value = self.critic(feat).squeeze(-1)
         return mean, std, value
 
-    def dist(self, mean, std):
+    def dist(self, mean: torch.Tensor, std: torch.Tensor):
         base = Normal(mean, std)
         dist = TransformedDistribution(
             base,
@@ -169,28 +170,37 @@ class ActorCriticV7(nn.Module):
         )
         return dist, base
 
-    @torch.no_grad()
-    def act(self, obs):
-        mean, std, value = self.forward(obs)
-        d, _ = self.dist(mean, std)
-        a = d.sample()
-        logp = d.log_prob(a).sum(-1)
-        return a, logp, value
+    def act(self, obs: torch.Tensor, action_mask: torch.Tensor, deterministic: bool = False):
+        mean, std, value = self.forward(obs, action_mask)
+        dist, _ = self.dist(mean, std)
+        if deterministic:
+            action = torch.tanh(mean) * self.action_limit
+        else:
+            action = dist.sample()
+        mask = action_mask.to(dtype=action.dtype, device=action.device)
+        action = action * mask
+        logp = (dist.log_prob(action) * mask).sum(-1)
+        return action, logp, value
 
-    def evaluate(self, obs, actions):
-        mean, std, value = self.forward(obs)
-        d, base = self.dist(mean, std)
-        logp = d.log_prob(actions).sum(-1)
-        entropy = base.entropy().sum(-1)
+    def evaluate(self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor):
+        mean, std, value = self.forward(obs, action_mask)
+        dist, base = self.dist(mean, std)
+        mask = action_mask.to(dtype=actions.dtype, device=actions.device)
+        actions = actions * mask
+        logp = (dist.log_prob(actions) * mask).sum(-1)
+        entropy = (base.entropy() * mask).sum(-1)
         return logp, value, entropy
+
+    def std_mean(self) -> float:
+        return float(torch.exp(self.log_std).clamp(0.05, 1.5).mean().item())
 
 
 # ==================== RL UTILS ====================
 def compute_gae(rewards, values, dones, gamma=0.99, lam=0.95):
-    t_max = rewards.shape[0]
+    t_max, n_agents = rewards.shape
     adv = torch.zeros_like(rewards)
-    gae = 0.0
-    next_value = torch.tensor(0.0, dtype=rewards.dtype, device=rewards.device)
+    gae = torch.zeros(n_agents, dtype=rewards.dtype, device=rewards.device)
+    next_value = torch.zeros(n_agents, dtype=rewards.dtype, device=rewards.device)
 
     for t in reversed(range(t_max)):
         mask = 1.0 - dones[t]
@@ -206,6 +216,7 @@ def ppo_update(
     policy,
     optim,
     obs,
+    action_mask,
     act,
     logp_old,
     adv,
@@ -236,7 +247,7 @@ def ppo_update(
         epoch_kls = []
         for start in range(0, n, mb):
             mb_idx = perm[start:start + mb]
-            logp, v, ent = policy.evaluate(obs[mb_idx], act[mb_idx])
+            logp, v, ent = policy.evaluate(obs[mb_idx], act[mb_idx], action_mask[mb_idx])
             ratio = torch.exp(torch.clamp(logp - logp_old[mb_idx], -20.0, 20.0))
             surr1 = ratio * adv[mb_idx]
             surr2 = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * adv[mb_idx]
@@ -279,8 +290,20 @@ def ppo_update(
     }
 
 
-def _count_discrete_actions(applied_actions: torch.Tensor) -> dict:
-    flat = applied_actions.reshape(-1)
+def _masked_values(tensor: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    valid = tensor[mask]
+    if valid.numel() > 0:
+        return valid
+    return torch.zeros(1, dtype=tensor.dtype, device=tensor.device)
+
+
+def _masked_mean_std(tensor: torch.Tensor, mask: torch.Tensor) -> tuple[float, float]:
+    valid = _masked_values(tensor, mask)
+    return float(valid.mean().item()), float(valid.std(unbiased=False).item())
+
+
+def _count_discrete_actions(applied_actions: torch.Tensor, action_mask: torch.Tensor) -> dict:
+    flat = _masked_values(applied_actions, action_mask).reshape(-1)
     return {
         "action_count_neg15": int((flat == -15.0).sum().item()),
         "action_count_neg10": int((flat == -10.0).sum().item()),
@@ -292,6 +315,47 @@ def _count_discrete_actions(applied_actions: torch.Tensor) -> dict:
     }
 
 
+def _build_action_summary_by_taz(
+    raw_actions: torch.Tensor,
+    applied_actions: torch.Tensor,
+    applied_deltas: torch.Tensor,
+    action_mask: torch.Tensor,
+    taz_ids: list[str],
+) -> dict:
+    summary = {}
+    for taz_idx, taz in enumerate(taz_ids):
+        valid_mask = action_mask[taz_idx].bool()
+        raw_valid = raw_actions[:, taz_idx, :][:, valid_mask].reshape(-1)
+        applied_valid = applied_actions[:, taz_idx, :][:, valid_mask].reshape(-1)
+        delta_valid = applied_deltas[:, taz_idx, :][:, valid_mask].reshape(-1)
+        if raw_valid.numel() == 0:
+            summary[taz] = {
+                "avg_action_raw": 0.0,
+                "avg_action_discrete": 0.0,
+                "avg_applied_duration_delta": 0.0,
+                "applied_duration_nonzero_ratio": 0.0,
+                "action_counts": {},
+            }
+            continue
+
+        summary[taz] = {
+            "avg_action_raw": float(raw_valid.mean().item()),
+            "avg_action_discrete": float(applied_valid.mean().item()),
+            "avg_applied_duration_delta": float(delta_valid.mean().item()),
+            "applied_duration_nonzero_ratio": float((delta_valid.abs() > 1e-3).float().mean().item()),
+            "action_counts": {
+                "neg15": int((applied_valid == -15.0).sum().item()),
+                "neg10": int((applied_valid == -10.0).sum().item()),
+                "neg5": int((applied_valid == -5.0).sum().item()),
+                "zero": int((applied_valid == 0.0).sum().item()),
+                "pos5": int((applied_valid == 5.0).sum().item()),
+                "pos10": int((applied_valid == 10.0).sum().item()),
+                "pos15": int((applied_valid == 15.0).sum().item()),
+            },
+        }
+    return summary
+
+
 def _set_global_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -300,9 +364,16 @@ def _set_global_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def _build_route_cache_folder(simulation_date: str, timeslot_clean: str, total_cars_random: int) -> str:
+def _move_optimizer_state_to_device(optim: torch.optim.Optimizer, device: torch.device):
+    for state in optim.state.values():
+        for key, value in list(state.items()):
+            if isinstance(value, torch.Tensor):
+                state[key] = value.to(device)
+
+
+def _build_route_cache_folder(root: str, simulation_date: str, timeslot_clean: str, total_cars_random: int) -> str:
     return os.path.join(
-        ROUTE_CACHE_ROOT,
+        root,
         simulation_date,
         timeslot_clean,
         f"count_{int(total_cars_random)}",
@@ -317,6 +388,15 @@ def _route_files_ready(route_folder_path: str) -> bool:
         "generatedRoutes.rou.xml",
     )
     return all(os.path.exists(os.path.join(route_folder_path, name)) for name in required)
+
+
+def _resolve_route_folder(simulation_date: str, timeslot_clean: str, total_cars_random: int) -> tuple[str, bool]:
+    roots = [ROUTE_CACHE_ROOT] + list(LEGACY_ROUTE_CACHE_ROOTS)
+    for root in roots:
+        folder = _build_route_cache_folder(root, simulation_date, timeslot_clean, total_cars_random)
+        if _route_files_ready(folder):
+            return folder, False
+    return _build_route_cache_folder(ROUTE_CACHE_ROOT, simulation_date, timeslot_clean, total_cars_random), True
 
 
 def _sample_demand_noise(episode_idx: int) -> float:
@@ -347,24 +427,21 @@ def _maybe_load_checkpoint(policy, optim, scheduler):
     if not LOAD_MODEL:
         return start_episode
 
-    ckpt_path = CHECKPOINT_PATH
-    if not os.path.isabs(ckpt_path):
-        ckpt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ckpt_path))
-    if not os.path.exists(ckpt_path):
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+    if not os.path.exists(CHECKPOINT_PATH):
+        raise FileNotFoundError(f"Checkpoint not found: {CHECKPOINT_PATH}")
 
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=True)
     policy.load_state_dict(ckpt["model_state_dict"])
     if "optimizer_state_dict" in ckpt and ckpt["optimizer_state_dict"] is not None:
         try:
             optim.load_state_dict(ckpt["optimizer_state_dict"])
-        except Exception as e:
-            print(f"[WARN] Could not load optimizer state: {e}")
+        except Exception as exc:
+            print(f"[WARN] Could not load optimizer state: {exc}")
     if "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"] is not None:
         try:
             scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-        except Exception as e:
-            print(f"[WARN] Could not load scheduler state: {e}")
+        except Exception as exc:
+            print(f"[WARN] Could not load scheduler state: {exc}")
 
     if RESUME_FROM_CHECKPOINT_EPISODE:
         start_episode = int(ckpt.get("episode", -1)) + 1
@@ -376,45 +453,29 @@ def _maybe_load_checkpoint(policy, optim, scheduler):
 # ==================== MAIN ====================
 def main():
     _set_global_seed(GLOBAL_SEED)
-    logFile = "../sumoenv/standalone/command_log.txt"
-    sumo = Simulator(configurationPath="../sumoenv/standalone", logFile=logFile, tazTlsMapFile=constants.TAZ_FILE)
-    twinPlanner = Planner(simulator=sumo)
+
+    sumo_standalone_dir = os.path.join(constants.SUMO_PATH, "standalone")
+    log_file = os.path.join(sumo_standalone_dir, "command_log_v9.txt")
+    sumo = Simulator(configurationPath=sumo_standalone_dir, logFile=log_file, tazTlsMapFile=constants.TAZ_FILE)
+    twin_planner = Planner(simulator=sumo)
     sumo.changeDetectorPath(detectorPath=constants.SUMO_NETWORK_PATH)
 
-    env = SumoTazEnvV7(sumoSimulator=sumo, stepSize=300, **ENV_V7_CONFIG)
+    env = SumoTazEnvV9(sumoSimulator=sumo, stepSize=300, **ENV_V9_CONFIG)
+    runtime_device = torch.device(env.device)
     taz_ids = env.get_taz_ids()
     tls_ids = env.get_tls_ids()
+    num_taz = len(taz_ids)
+    obs_dim = int(env.agent_obs_dim)
+    act_dim = int(env.max_tls_per_taz)
 
-    # TorchRL may expose either Composite specs (with "observation"/"action")
-    # or plain tensor specs. Infer robustly.
-    try:
-        obs_dim = int(env.observation_spec["observation"].shape[-1])
-    except Exception:
-        obs_shape = tuple(getattr(env.observation_spec, "shape", ()))
-        if len(obs_shape) > 0:
-            obs_dim = int(obs_shape[-1])
-        else:
-            td_probe = env.reset()
-            obs_dim = int(td_probe["observation"].shape[-1])
-            try:
-                if env.sumo.isLoaded():
-                    env.sumo.end()
-            except Exception:
-                pass
-
-    try:
-        act_dim = int(env.action_spec["action"].shape[-1])
-    except Exception:
-        act_shape = tuple(getattr(env.action_spec, "shape", ()))
-        act_dim = int(act_shape[-1]) if len(act_shape) > 0 else len(env.get_tls_ids())
-
-    policy = ActorCriticV7(obs_dim, act_dim, action_limit=ACTION_LIMIT)
+    policy = ActorCriticV9(obs_dim, act_dim, action_limit=ACTION_LIMIT).to(runtime_device)
     policy.train()
     optim = torch.optim.Adam(policy.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optim, mode="max", factor=0.7, patience=12, threshold=0.01, threshold_mode="rel", min_lr=1e-5
     )
     start_episode = _maybe_load_checkpoint(policy, optim, scheduler)
+    _move_optimizer_state_to_device(optim, runtime_device)
 
     episode_schedule = _build_episode_schedule()
     n_episodes = len(episode_schedule)
@@ -422,55 +483,44 @@ def main():
         print(f"[INFO] start_episode={start_episode} >= n_episodes={n_episodes}. Nothing to train.")
         return
 
-    csv_path = "training_history_v7.csv"
-    json_path = "training_history_v7.json"
-    ckpt_dir = "checkpoints_v7"
-    tls_diag_dir = "tls_duration_diagnostics_v7"
+    csv_path = os.path.join(SCRIPT_DIR, "training_history_v9.csv")
+    json_path = os.path.join(SCRIPT_DIR, "training_history_v9.json")
+    ckpt_dir = os.path.join(SCRIPT_DIR, "checkpoints_v9")
+    detail_dir = os.path.join(SCRIPT_DIR, "training_details_v9")
     os.makedirs(ckpt_dir, exist_ok=True)
-    os.makedirs(tls_diag_dir, exist_ok=True)
+    os.makedirs(detail_dir, exist_ok=True)
 
     csv_cols = [
-        "episode", "date", "timeslot", "num_taz", "num_tls", "total_reward", "num_steps",
+        "episode", "date", "timeslot", "num_taz", "num_tls", "num_steps", "reward_basis",
+        "episode_reward_mean", "episode_reward_std", "episode_reward_min", "episode_reward_max", "episode_reward_sum",
+        "final_penalty_mean", "final_penalty_std", "final_penalty_min", "final_penalty_max",
         "avg_action_raw", "sample_action_std_raw", "avg_action_discrete", "sample_action_std_discrete",
         "action_count_neg15", "action_count_neg10", "action_count_neg5", "action_count_zero",
         "action_count_pos5", "action_count_pos10", "action_count_pos15",
         "avg_applied_duration_delta", "sample_applied_duration_delta_std", "applied_duration_nonzero_ratio",
-        "tls_duration_mean_net_abs_delta", "tls_duration_mean_cumulative_abs_delta",
-        "tls_duration_mean_net_to_cumulative_ratio", "tls_duration_mean_sign_flips",
-        "tls_duration_mean_nonzero_updates", "tls_duration_reverted_tls_ratio",
-        "tls_duration_changed_tls_ratio", "tls_duration_details_path",
-        "reward_basis", "reward_parse_ok", "comparison_reward_enabled", "baseline_penalty", "delta_penalty", "reward_penalty",
-        "eval_ran", "eval_baseline_parse_ok", "eval_baseline_penalty", "eval_delta_penalty",
-        "trip_count", "total_time_loss", "total_co2", "total_nox", "total_fuel",
-        "episode_max_jam_len", "baseline_episode_max_jam_len", "delta_episode_max_jam_len",
-        "time_loss_norm", "emission_norm", "jam_norm",
         "returns_mean", "returns_std", "avg_value_estimate",
         "learning_rate", "learning_rate_after_step",
         "ppo_total_loss", "ppo_policy_loss", "ppo_value_loss",
         "policy_clip_fraction", "approx_kl", "ppo_early_stop", "ppo_epochs_performed", "ppo_epochs_planned",
-        "policy_std_mean",
+        "policy_std_mean", "details_path",
     ]
     history = []
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=csv_cols).writeheader()
+    with open(csv_path, "w", newline="", encoding="utf-8") as handle:
+        csv.DictWriter(handle, fieldnames=csv_cols).writeheader()
 
     best_reward = float("-inf")
     best_episode = -1
-    fixed_obs = torch.zeros((1, obs_dim), dtype=torch.float32)
     interrupted = False
     last_completed_episode = start_episode - 1
 
-    print(f"[INFO] v7 TAZ count: {len(taz_ids)} | IDs: {taz_ids}")
-    print(f"[INFO] v7 TLS count: {len(tls_ids)}")
-    print(f"[INFO] Observation dim: {obs_dim} | Action dim: {act_dim}")
+    print(f"[INFO] v9 TAZ count: {len(taz_ids)} | IDs: {taz_ids}")
+    print(f"[INFO] v9 TLS count: {len(tls_ids)}")
+    print(f"[INFO] Observation dim per TAZ: {obs_dim} | Action dim per TAZ: {act_dim}")
     print(f"[INFO] Global seed: {GLOBAL_SEED}")
-    print(f"[INFO] Comparison reward vs baseline: {USE_BASELINE_COMPARISON_REWARD}")
-    if not USE_BASELINE_COMPARISON_REWARD:
-        print(f"[INFO] Baseline evaluation cadence (episodes): {BASELINE_EVAL_EVERY}")
     print(
         f"[INFO] Deterministic route cache: {REUSE_DETERMINISTIC_ROUTE_FILES} | "
-        f"randomTrips seed={ROUTE_RANDOM_TRIP_SEED} | routeSampler seed={ROUTE_SAMPLER_SEED} | "
-        f"threads={ROUTE_SAMPLER_THREADS}"
+        f"primary={ROUTE_CACHE_ROOT} | randomTrips seed={ROUTE_RANDOM_TRIP_SEED} | "
+        f"routeSampler seed={ROUTE_SAMPLER_SEED} | threads={ROUTE_SAMPLER_THREADS}"
     )
 
     for episode_idx in range(start_episode, n_episodes):
@@ -481,15 +531,18 @@ def main():
         print(f"\n[RL EP {episode_num}/{n_episodes}] Date={simulation_date} Slot={timeslot}")
 
         timeslot_clean = timeslot.replace(":", "-")
-
         hour_multiplier = HOURLY_DEMAND_PROFILE[hour]
         total_cars = int(BASE_DEMAND * hour_multiplier)
         noise = _sample_demand_noise(episode_idx)
         total_cars_random = int(total_cars * noise)
-        route_folder_path = _build_route_cache_folder(simulation_date, timeslot_clean, total_cars_random)
+        route_folder_path, should_generate_routes = _resolve_route_folder(
+            simulation_date,
+            timeslot_clean,
+            total_cars_random,
+        )
         os.makedirs(os.path.join(route_folder_path, "output"), exist_ok=True)
 
-        if REUSE_DETERMINISTIC_ROUTE_FILES and _route_files_ready(route_folder_path):
+        if REUSE_DETERMINISTIC_ROUTE_FILES and not should_generate_routes:
             print(
                 f"[ROUTE CACHE] RL EP {episode_num}/{n_episodes} | "
                 f"Reusing deterministic trip/route files from {route_folder_path}"
@@ -499,13 +552,8 @@ def main():
                 f"[ROUTE GEN] RL EP {episode_num}/{n_episodes} | "
                 f"Generating deterministic trip/route files at {route_folder_path}"
             )
-            print(
-                f"[ROUTE GEN] RL EP {episode_num}/{n_episodes} | "
-                f"randomTrips seed={ROUTE_RANDOM_TRIP_SEED} | routeSampler seed={ROUTE_SAMPLER_SEED} | "
-                f"threads={ROUTE_SAMPLER_THREADS}"
-            )
             generateEdgeDataFile(PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, date=simulation_date, time_slot=timeslot)
-            twinPlanner.scenarioGenerator.generateRoute(
+            twin_planner.scenarioGenerator.generateRoute(
                 inputEdgePath=EDGE_DATA_FILE_PATH,
                 timeSlot=timeslot_clean,
                 totalCount=total_cars_random,
@@ -515,59 +563,42 @@ def main():
                 routeSamplerSeed=ROUTE_SAMPLER_SEED,
                 routeSamplerThreads=ROUTE_SAMPLER_THREADS,
             )
+
         sumo.changeTypePath(typePath=route_folder_path)
         sumo.changeRouteFilePath(route_folder_path)
 
-        baseline_penalty = None
-        baseline_components = {}
-        if USE_BASELINE_COMPARISON_REWARD:
-            print(f"[BASELINE TRAIN] RL EP {episode_num}/{n_episodes} | Starting no-agent baseline run.")
-            try:
-                baseline_penalty, baseline_components = env.run_reference_episode_no_agent(hour=hour)
-            except KeyboardInterrupt:
-                interrupted = True
-                print(f"[WARN] Interrupted during baseline training run for RL EP {episode_num}/{n_episodes}.")
-                break
-            if not bool(baseline_components.get("parse_ok", False)):
-                print(
-                    f"[BASELINE TRAIN] RL EP {episode_num}/{n_episodes} | "
-                    "Parse failed. Falling back to absolute reward for this episode."
-                )
-                baseline_penalty = None
-            else:
-                print(
-                    f"[BASELINE TRAIN] RL EP {episode_num}/{n_episodes} | "
-                    f"Done. Penalty={baseline_penalty:.4f}"
-                )
-            env.set_baseline_penalty(baseline_penalty, baseline_components)
-        else:
-            env.set_baseline_penalty(None)
-
         env.set_episode_context(hour=hour)
-        print(f"[RL RUN] RL EP {episode_num}/{n_episodes} | Starting controlled RL simulation.")
+        print(f"[RL RUN] RL EP {episode_num}/{n_episodes} | Starting per-TAZ RL simulation.")
         td = env.reset()
 
         rewards_list = []
+        tls_rewards_list = []
         values_list = []
         logps_list = []
         obs_list = []
+        action_masks_list = []
         acts_list = []
         applied_acts_list = []
         applied_deltas_list = []
         dones_list = []
-        terminal_reward = None
         episode_invalid = False
 
         while True:
-            obs = td["observation"].unsqueeze(0)
-            a, logp, v = policy.act(obs)
+            obs = td["observation"]
+            action_mask = td["action_mask"].bool()
+            if not torch.isfinite(obs).all():
+                print("[WARN] Non-finite observation. Skipping episode.")
+                episode_invalid = True
+                break
+
+            a, logp, v = policy.act(obs, action_mask)
             if not (torch.isfinite(a).all() and torch.isfinite(logp).all() and torch.isfinite(v).all()):
                 print("[WARN] Non-finite tensors in policy output. Skipping episode.")
                 episode_invalid = True
                 break
 
             try:
-                step_td = env.step(TensorDict({"action": a.squeeze(0)}, batch_size=[]))
+                step_td = env.step(TensorDict({"action": a}, batch_size=[], device=runtime_device))
             except KeyboardInterrupt:
                 interrupted = True
                 episode_invalid = True
@@ -575,20 +606,32 @@ def main():
                 break
 
             next_td = step_td["next"] if "next" in step_td.keys() else step_td
-            r = next_td["reward"].item()
+            reward_vec = next_td["reward"].detach().clone()
+            tls_reward_vec = next_td["reward_tls"].detach().clone()
             terminated = bool(next_td["terminated"].item())
             truncated = bool(next_td["truncated"].item())
+            done_vec = torch.full_like(reward_vec, 1.0 if (terminated or truncated) else 0.0)
 
-            obs_list.append(obs.squeeze(0))
-            acts_list.append(a.squeeze(0))
+            if not (
+                torch.isfinite(reward_vec).all()
+                and torch.isfinite(tls_reward_vec).all()
+                and torch.isfinite(next_td["applied_action"]).all()
+                and torch.isfinite(next_td["applied_duration_delta"]).all()
+            ):
+                print("[WARN] Non-finite environment outputs. Skipping episode.")
+                episode_invalid = True
+                break
+
+            obs_list.append(obs.detach().clone())
+            action_masks_list.append(action_mask.detach().clone())
+            acts_list.append(a.detach().clone())
             applied_acts_list.append(next_td["applied_action"].detach().clone())
             applied_deltas_list.append(next_td["applied_duration_delta"].detach().clone())
-            logps_list.append(logp.squeeze(0))
-            values_list.append(v.squeeze(0))
-            rewards_list.append(torch.tensor(r, dtype=torch.float32))
-            dones_list.append(torch.tensor(1.0 if (terminated or truncated) else 0.0, dtype=torch.float32))
-            if terminated or truncated:
-                terminal_reward = float(r)
+            logps_list.append(logp.detach().clone())
+            values_list.append(v.detach().clone())
+            rewards_list.append(reward_vec)
+            tls_rewards_list.append(tls_reward_vec)
+            dones_list.append(done_vec)
 
             if terminated or truncated:
                 break
@@ -597,22 +640,33 @@ def main():
         if interrupted:
             break
         if episode_invalid or len(rewards_list) == 0:
+            try:
+                if env.sumo.isLoaded():
+                    env.sumo.end()
+            except Exception:
+                pass
             continue
 
-        total_reward = float(terminal_reward) if terminal_reward is not None else float(sum(x.item() for x in rewards_list))
-
         rewards_t = torch.stack(rewards_list)
+        tls_rewards_t = torch.stack(tls_rewards_list)
         values_t = torch.stack(values_list)
         dones_t = torch.stack(dones_list)
         adv_t, ret_t = compute_gae(rewards_t, values_t, dones_t, gamma=GAMMA, lam=LAMBDA)
 
-        batch_obs = torch.stack(obs_list)
-        batch_act = torch.stack(acts_list)
-        batch_applied_act = torch.stack(applied_acts_list)
-        batch_applied_delta = torch.stack(applied_deltas_list)
-        batch_logp = torch.stack(logps_list)
-        batch_adv = (adv_t - adv_t.mean()) / (adv_t.std(unbiased=False) + 1e-8)
-        batch_ret = ret_t
+        batch_obs_3d = torch.stack(obs_list)
+        batch_mask_3d = torch.stack(action_masks_list)
+        batch_act_3d = torch.stack(acts_list)
+        batch_applied_act_3d = torch.stack(applied_acts_list)
+        batch_applied_delta_3d = torch.stack(applied_deltas_list)
+        batch_logp_2d = torch.stack(logps_list)
+
+        batch_obs = batch_obs_3d.reshape(-1, obs_dim)
+        batch_action_mask = batch_mask_3d.reshape(-1, act_dim)
+        batch_act = batch_act_3d.reshape(-1, act_dim)
+        batch_logp = batch_logp_2d.reshape(-1)
+        batch_adv = adv_t.reshape(-1)
+        batch_adv = (batch_adv - batch_adv.mean()) / (batch_adv.std(unbiased=False) + 1e-8)
+        batch_ret = ret_t.reshape(-1)
 
         progress = episode_idx / max(n_episodes - 1, 1)
         if progress <= ENTROPY_WARMUP_RATIO:
@@ -622,132 +676,107 @@ def main():
             entropy_coef_now = ENTROPY_COEF + (ENTROPY_COEF_FINAL - ENTROPY_COEF) * decay_progress
 
         stats = ppo_update(
-            policy, optim, batch_obs, batch_act, batch_logp, batch_adv, batch_ret,
-            clip_ratio=CLIP_RATIO, ppo_epochs=PPO_UPDATE_EPOCHS, minibatch_size=MINIBATCH_SIZE,
-            entropy_coef=entropy_coef_now, value_coef=VALUE_COEF, target_kl=TARGET_KL
+            policy,
+            optim,
+            batch_obs,
+            batch_action_mask,
+            batch_act,
+            batch_logp,
+            batch_adv,
+            batch_ret,
+            clip_ratio=CLIP_RATIO,
+            ppo_epochs=PPO_UPDATE_EPOCHS,
+            minibatch_size=MINIBATCH_SIZE,
+            entropy_coef=entropy_coef_now,
+            value_coef=VALUE_COEF,
+            target_kl=TARGET_KL,
         )
         lr_before_step = float(optim.param_groups[0]["lr"])
-        scheduler.step(total_reward)
+        episode_reward_by_taz_tensor = rewards_t.sum(dim=0).cpu()
+        episode_reward_by_tls_tensor = tls_rewards_t.sum(dim=0).cpu()
+        reward_mean = float(episode_reward_by_taz_tensor.mean().item())
+        scheduler.step(reward_mean)
         lr_after_step = float(optim.param_groups[0]["lr"])
 
-        with torch.no_grad():
-            _, std_dbg, _ = policy.forward(fixed_obs)
-            policy_std_mean = float(std_dbg.mean().item())
+        reward_components = dict(getattr(env, "last_reward_components", {}) or {})
+        penalty_by_taz = {
+            taz: float((reward_components.get("penalty_by_taz", {}) or {}).get(taz, 0.0))
+            for taz in taz_ids
+        }
+        penalty_by_tls = {
+            tls: float((reward_components.get("penalty_by_tls", {}) or {}).get(tls, 0.0))
+            for tls in tls_ids
+        }
+        penalty_vector = torch.tensor([penalty_by_taz[taz] for taz in taz_ids], dtype=torch.float32)
+        reward_by_taz = {
+            taz: float(episode_reward_by_taz_tensor[idx].item())
+            for idx, taz in enumerate(taz_ids)
+        }
+        reward_by_tls = {
+            tls: float(episode_reward_by_tls_tensor[idx].item())
+            for idx, tls in enumerate(tls_ids)
+        }
 
-        reward_components = dict(getattr(env, "last_reward_components", {}))
-        reward_penalty = float(reward_components.get("penalty", 0.0))
-        tls_duration_diag = dict(getattr(env, "last_duration_diagnostics", {}) or {})
-        tls_duration_summary = dict(tls_duration_diag.get("summary", {}) or {})
-        tls_duration_detail_path = os.path.join(tls_diag_dir, f"episode_{episode_idx:04d}.json")
-        with open(tls_duration_detail_path, "w", encoding="utf-8") as f:
+        batch_mask_stats = batch_mask_3d.bool()
+        avg_action_raw, std_action_raw = _masked_mean_std(batch_act_3d, batch_mask_stats)
+        avg_action_discrete, std_action_discrete = _masked_mean_std(batch_applied_act_3d, batch_mask_stats)
+        avg_applied_delta, std_applied_delta = _masked_mean_std(batch_applied_delta_3d, batch_mask_stats)
+        nonzero_ratio = float((_masked_values(batch_applied_delta_3d.abs(), batch_mask_stats) > 1e-3).float().mean().item())
+        action_counts = _count_discrete_actions(batch_applied_act_3d, batch_mask_stats)
+        action_summary_by_taz = _build_action_summary_by_taz(
+            raw_actions=batch_act_3d,
+            applied_actions=batch_applied_act_3d,
+            applied_deltas=batch_applied_delta_3d,
+            action_mask=batch_mask_3d[0],
+            taz_ids=taz_ids,
+        )
+
+        detail_path = os.path.join(detail_dir, f"episode_{episode_idx:04d}.json")
+        with open(detail_path, "w", encoding="utf-8") as handle:
             json.dump(
                 {
                     "episode": int(episode_idx),
                     "episode_num": int(episode_num),
                     "date": simulation_date,
                     "timeslot": timeslot,
-                    "summary": tls_duration_summary,
-                    "per_tls": tls_duration_diag.get("per_tls", {}),
+                    "num_steps": int(len(rewards_list)),
+                    "reward_by_taz": reward_by_taz,
+                    "reward_by_tls": reward_by_tls,
+                    "final_penalty_by_taz": penalty_by_taz,
+                    "final_penalty_by_tls": penalty_by_tls,
+                    "final_penalty_details_by_taz": reward_components.get("penalty_details_by_taz", {}),
+                    "final_penalty_details_by_tls": reward_components.get("penalty_details_by_tls", {}),
+                    "action_summary_by_taz": action_summary_by_taz,
                 },
-                f,
+                handle,
                 indent=2,
             )
 
-        # Optional periodic no-agent baseline evaluation (logging only, no training reward impact).
-        eval_ran = False
-        eval_baseline_penalty = None
-        eval_baseline_components = {}
-        eval_baseline_parse_ok = False
-        if (
-            (not USE_BASELINE_COMPARISON_REWARD)
-            and BASELINE_EVAL_EVERY > 0
-            and (episode_num % BASELINE_EVAL_EVERY == 0)
-        ):
-            eval_ran = True
-            print(
-                f"[BASELINE EVAL] RL EP {episode_num}/{n_episodes} | "
-                "Starting no-agent baseline run for logging."
-            )
-            try:
-                eval_baseline_penalty, eval_baseline_components = env.run_reference_episode_no_agent(hour=hour)
-            except KeyboardInterrupt:
-                interrupted = True
-                print(f"[WARN] Interrupted during baseline evaluation run for RL EP {episode_num}/{n_episodes}.")
-                break
-            eval_baseline_parse_ok = bool(eval_baseline_components.get("parse_ok", False))
-            if not eval_baseline_parse_ok:
-                eval_baseline_penalty = None
-                print(
-                    f"[BASELINE EVAL] RL EP {episode_num}/{n_episodes} | "
-                    "Done, but parsing failed."
-                )
-            else:
-                print(
-                    f"[BASELINE EVAL] RL EP {episode_num}/{n_episodes} | "
-                    f"Done. Penalty={eval_baseline_penalty:.4f}"
-                )
-            env.set_baseline_penalty(None)
-
-        if interrupted:
-            break
-
-        eval_delta_penalty = ""
-        if eval_baseline_penalty is not None:
-            eval_delta_penalty = float(eval_baseline_penalty - reward_penalty)
-
-        baseline_components_for_log = baseline_components if USE_BASELINE_COMPARISON_REWARD else eval_baseline_components
-        baseline_episode_max_jam_len = ""
-        delta_episode_max_jam_len = ""
-        if len(baseline_components_for_log) > 0:
-            baseline_episode_max_jam_len = float(baseline_components_for_log.get("episode_max_jam_len", 0.0))
-            delta_episode_max_jam_len = baseline_episode_max_jam_len - float(reward_components.get("episode_max_jam_len", 0.0))
-
-        action_counts = _count_discrete_actions(batch_applied_act)
         row = {
             "episode": int(episode_idx),
             "date": simulation_date,
             "timeslot": timeslot,
-            "num_taz": int(reward_components.get("num_taz", len(taz_ids))),
-            "num_tls": int(reward_components.get("num_tls", len(tls_ids))),
-            "total_reward": float(total_reward),
+            "num_taz": int(num_taz),
+            "num_tls": int(len(tls_ids)),
             "num_steps": int(len(rewards_list)),
-            "avg_action_raw": float(batch_act.mean().item()),
-            "sample_action_std_raw": float(batch_act.std(unbiased=False).item()),
-            "avg_action_discrete": float(batch_applied_act.mean().item()),
-            "sample_action_std_discrete": float(batch_applied_act.std(unbiased=False).item()),
+            "reward_basis": str(reward_components.get("reward_basis", "per_taz_sum_tls_step_delta")),
+            "episode_reward_mean": reward_mean,
+            "episode_reward_std": float(episode_reward_by_taz_tensor.std(unbiased=False).item()),
+            "episode_reward_min": float(episode_reward_by_taz_tensor.min().item()),
+            "episode_reward_max": float(episode_reward_by_taz_tensor.max().item()),
+            "episode_reward_sum": float(episode_reward_by_taz_tensor.sum().item()),
+            "final_penalty_mean": float(penalty_vector.mean().item()),
+            "final_penalty_std": float(penalty_vector.std(unbiased=False).item()),
+            "final_penalty_min": float(penalty_vector.min().item()),
+            "final_penalty_max": float(penalty_vector.max().item()),
+            "avg_action_raw": avg_action_raw,
+            "sample_action_std_raw": std_action_raw,
+            "avg_action_discrete": avg_action_discrete,
+            "sample_action_std_discrete": std_action_discrete,
             **action_counts,
-            "avg_applied_duration_delta": float(batch_applied_delta.mean().item()),
-            "sample_applied_duration_delta_std": float(batch_applied_delta.std(unbiased=False).item()),
-            "applied_duration_nonzero_ratio": float((batch_applied_delta.abs() > 1e-3).float().mean().item()),
-            "tls_duration_mean_net_abs_delta": float(tls_duration_summary.get("mean_total_net_abs_delta", 0.0)),
-            "tls_duration_mean_cumulative_abs_delta": float(tls_duration_summary.get("mean_total_cumulative_abs_delta", 0.0)),
-            "tls_duration_mean_net_to_cumulative_ratio": float(tls_duration_summary.get("mean_net_to_cumulative_ratio", 0.0)),
-            "tls_duration_mean_sign_flips": float(tls_duration_summary.get("mean_total_sign_flips", 0.0)),
-            "tls_duration_mean_nonzero_updates": float(tls_duration_summary.get("mean_total_nonzero_updates", 0.0)),
-            "tls_duration_reverted_tls_ratio": float(tls_duration_summary.get("reverted_tls_ratio", 0.0)),
-            "tls_duration_changed_tls_ratio": float(tls_duration_summary.get("changed_tls_ratio", 0.0)),
-            "tls_duration_details_path": tls_duration_detail_path,
-            "reward_basis": str(reward_components.get("reward_basis", "")),
-            "reward_parse_ok": bool(reward_components.get("parse_ok", False)),
-            "comparison_reward_enabled": bool(reward_components.get("comparison_reward_enabled", False)),
-            "baseline_penalty": float(reward_components.get("baseline_penalty", 0.0)),
-            "delta_penalty": float(reward_components.get("delta_penalty", 0.0)),
-            "reward_penalty": reward_penalty,
-            "eval_ran": bool(eval_ran),
-            "eval_baseline_parse_ok": bool(eval_baseline_parse_ok) if eval_ran else "",
-            "eval_baseline_penalty": float(eval_baseline_penalty) if eval_baseline_penalty is not None else "",
-            "eval_delta_penalty": eval_delta_penalty,
-            "trip_count": int(reward_components.get("trip_count", 0)),
-            "total_time_loss": float(reward_components.get("total_time_loss", 0.0)),
-            "total_co2": float(reward_components.get("total_co2", 0.0)),
-            "total_nox": float(reward_components.get("total_nox", 0.0)),
-            "total_fuel": float(reward_components.get("total_fuel", 0.0)),
-            "episode_max_jam_len": float(reward_components.get("episode_max_jam_len", 0.0)),
-            "baseline_episode_max_jam_len": baseline_episode_max_jam_len,
-            "delta_episode_max_jam_len": delta_episode_max_jam_len,
-            "time_loss_norm": float(reward_components.get("time_loss_norm", 0.0)),
-            "emission_norm": float(reward_components.get("emission_norm", 0.0)),
-            "jam_norm": float(reward_components.get("jam_norm", 0.0)),
+            "avg_applied_duration_delta": avg_applied_delta,
+            "sample_applied_duration_delta_std": std_applied_delta,
+            "applied_duration_nonzero_ratio": nonzero_ratio,
             "returns_mean": float(batch_ret.mean().item()),
             "returns_std": float(batch_ret.std(unbiased=False).item()),
             "avg_value_estimate": float(values_t.mean().item()),
@@ -761,54 +790,55 @@ def main():
             "ppo_early_stop": stats["early_stop"],
             "ppo_epochs_performed": stats["epochs_performed"],
             "ppo_epochs_planned": stats["epochs_planned"],
-            "policy_std_mean": policy_std_mean,
+            "policy_std_mean": policy.std_mean(),
+            "details_path": detail_path,
         }
         history.append(row)
 
-        with open(csv_path, "a", newline="", encoding="utf-8") as f:
-            csv.DictWriter(f, fieldnames=csv_cols).writerow({k: row.get(k, "") for k in csv_cols})
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(history, f, indent=2)
+        with open(csv_path, "a", newline="", encoding="utf-8") as handle:
+            csv.DictWriter(handle, fieldnames=csv_cols).writerow({k: row.get(k, "") for k in csv_cols})
+        with open(json_path, "w", encoding="utf-8") as handle:
+            json.dump(history, handle, indent=2)
 
         ckpt_payload = {
             "episode": episode_idx,
             "model_state_dict": policy.state_dict(),
             "optimizer_state_dict": optim.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
-            "total_reward": float(total_reward),
-            "env_config": ENV_V7_CONFIG,
+            "reward_mean": reward_mean,
+            "env_config": ENV_V9_CONFIG,
             "focus_hours": FOCUS_HOURS,
             "taz_ids": taz_ids,
+            "tls_ids": tls_ids,
             "tls_count": len(tls_ids),
+            "max_tls_per_taz": act_dim,
             "ppo": stats,
             "interrupted": False,
         }
-        torch.save(ckpt_payload, os.path.join(ckpt_dir, f"checkpoint_ppo_v7_episode{episode_idx}.pt"))
+        torch.save(ckpt_payload, os.path.join(ckpt_dir, f"checkpoint_ppo_v9_episode{episode_idx}.pt"))
 
-        if total_reward > best_reward:
-            best_reward = float(total_reward)
+        if reward_mean > best_reward:
+            best_reward = float(reward_mean)
             best_episode = int(episode_idx)
             best_payload = dict(ckpt_payload)
             best_payload["is_best"] = True
-            torch.save(best_payload, os.path.join(ckpt_dir, "checkpoint_ppo_v7_best.pt"))
+            torch.save(best_payload, os.path.join(ckpt_dir, "checkpoint_ppo_v9_best.pt"))
 
         last_completed_episode = episode_idx
-        msg = (
-            f"[RL RESULT] RL EP {episode_num}/{n_episodes} | Reward {total_reward:.4f} | "
-            f"BaselinePen {row['baseline_penalty']:.4f} | "
-            f"Delta {row['delta_penalty']:.4f} | Penalty {row['reward_penalty']:.4f} | "
-            f"TimeLoss {row['total_time_loss']:.0f} | CO2 {row['total_co2']:.0f} | "
-            f"MaxJam {row['episode_max_jam_len']:.2f} | KL {row['approx_kl']:.4f} | "
-            f"TLSNetAbs {row['tls_duration_mean_net_abs_delta']:.2f} | "
-            f"TLSCumAbs {row['tls_duration_mean_cumulative_abs_delta']:.2f} | "
-            f"TLSNet/Cum {row['tls_duration_mean_net_to_cumulative_ratio']:.2f} | "
-            f"TLSRevert {row['tls_duration_reverted_tls_ratio']:.2f}"
+        best_taz = max(reward_by_taz, key=reward_by_taz.get)
+        worst_taz = min(reward_by_taz, key=reward_by_taz.get)
+        best_tls = max(reward_by_tls, key=reward_by_tls.get)
+        worst_tls = min(reward_by_tls, key=reward_by_tls.get)
+        print(
+            f"[RL RESULT] RL EP {episode_num}/{n_episodes} | "
+            f"RewardMean {row['episode_reward_mean']:.4f} | RewardStd {row['episode_reward_std']:.4f} | "
+            f"PenaltyMean {row['final_penalty_mean']:.4f} | ActionMean {row['avg_action_discrete']:.2f} | "
+            f"AppliedNZ {row['applied_duration_nonzero_ratio']:.2f} | KL {row['approx_kl']:.4f} | "
+            f"BestTAZ {best_taz}={reward_by_taz[best_taz]:.4f} | "
+            f"WorstTAZ {worst_taz}={reward_by_taz[worst_taz]:.4f} | "
+            f"BestTLS {best_tls}={reward_by_tls[best_tls]:.4f} | "
+            f"WorstTLS {worst_tls}={reward_by_tls[worst_tls]:.4f}"
         )
-        if eval_baseline_penalty is not None:
-            msg += f" | EvalBaselinePen {eval_baseline_penalty:.4f} | EvalDelta {eval_delta_penalty:.4f}"
-        elif eval_ran and not eval_baseline_parse_ok:
-            msg += " | EvalBaselinePen parse_failed"
-        print(msg)
 
     try:
         env.sumo.end()
@@ -822,15 +852,16 @@ def main():
             "optimizer_state_dict": optim.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "history_len": len(history),
-            "env_config": ENV_V7_CONFIG,
+            "env_config": ENV_V9_CONFIG,
             "focus_hours": FOCUS_HOURS,
             "taz_ids": taz_ids,
+            "tls_ids": tls_ids,
             "tls_count": len(tls_ids),
             "best_episode": best_episode,
             "best_reward": best_reward,
             "interrupted": bool(interrupted),
         },
-        os.path.join(ckpt_dir, "checkpoint_ppo_v7_final.pt"),
+        os.path.join(ckpt_dir, "checkpoint_ppo_v9_final.pt"),
     )
 
     if interrupted:

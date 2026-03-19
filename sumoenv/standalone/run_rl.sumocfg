@@ -37,7 +37,7 @@
 		<!-- <threads value="8" /> -->
 		<!--<route-steps value="500" /> -->
         <!-- <ignore-route-errors value="true"/>  IGNORA PERCORSI CON ERRORI  -->
-        <!--<time-to-teleport value="10"/>  DISABILITA TELETRASPORTO -->  
+        <time-to-teleport value="-1"/> <!--  DISABILITA TELETRASPORTO -->
 		<ignore-junction-blocker value="1"/> <!-- NON ASPETTARE DI ENTRARE NELLA ROTONDA/INCROCIO SE LA STRADA è LIBERA --> 
     </processing> 
 	

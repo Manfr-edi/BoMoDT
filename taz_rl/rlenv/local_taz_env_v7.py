@@ -177,12 +177,17 @@ class SumoTazEnvV7(EnvBase):
         self.live_feature_dim = 7
         state_dim = n_tls_features + n_taz_features + self.live_feature_dim
 
-        self.observation_spec = UnboundedSpec(shape=(state_dim,))
-        self.action_spec = BoundedSpec(low=-15.0, high=15.0, shape=(len(self.tls_list),))
-        self.reward_spec = UnboundedSpec(shape=(1,))
+        self.observation_spec = UnboundedSpec(shape=(state_dim,), device=self.device)
+        self.action_spec = BoundedSpec(
+            low=-15.0,
+            high=15.0,
+            shape=(len(self.tls_list),),
+            device=self.device,
+        )
+        self.reward_spec = UnboundedSpec(shape=(1,), device=self.device)
 
         self.discrete_action_values = torch.tensor(
-            [-15.0, -10.0, -5.0, 5.0, 10.0, 15.0],
+            [-15.0, -10.0, -5.0, 0.0, 5.0, 10.0, 15.0],
             dtype=torch.float32,
             device=self.device,
         )
@@ -201,9 +206,17 @@ class SumoTazEnvV7(EnvBase):
         self._last_green_tls_snapshot = {}
         self._phase_duration_memory = {}
         self._active_program_id = {}
+        self._episode_phase_initial_durations = {}
+        self._episode_phase_cumulative_abs_deltas = {}
+        self._episode_phase_signed_deltas = {}
+        self._episode_phase_nonzero_updates = {}
+        self._episode_phase_sign_flips = {}
+        self._episode_phase_last_nonzero_sign = {}
+        self._episode_duration_events = {}
         self._episode_max_jam_len = 0.0
 
         self.last_reward_components = {}
+        self.last_duration_diagnostics = {}
         self.reference_penalty = None
         self.reference_reward_components = {}
 
@@ -353,6 +366,24 @@ class SumoTazEnvV7(EnvBase):
     def _is_green_phase_state(phase_state: str) -> bool:
         return ("g" in phase_state) or ("G" in phase_state)
 
+    @staticmethod
+    def _has_yellow_phase_state(phase_state: str) -> bool:
+        return ("y" in phase_state) or ("Y" in phase_state)
+
+    @classmethod
+    def _is_editable_phase_state(cls, phase_state: str) -> bool:
+        return cls._is_green_phase_state(phase_state) and not cls._has_yellow_phase_state(phase_state)
+
+    @staticmethod
+    def _normalize_phase_duration_value(duration: float, fallback: float = 1.0) -> int:
+        try:
+            value = float(duration)
+        except Exception:
+            value = float(fallback)
+        if not np.isfinite(value):
+            value = float(fallback)
+        return max(int(round(value)), 1)
+
     def _get_time_features(self):
         angle = 2.0 * np.pi * (self.current_hour % 24) / 24.0
         return float(np.sin(angle)), float(np.cos(angle))
@@ -433,7 +464,7 @@ class SumoTazEnvV7(EnvBase):
                 tls_num_phases[tls] = max_phases
         return tls_num_phases, max_phases
 
-    def _find_previous_green_phase_id(self, program, current_phase_id: int) -> Optional[int]:
+    def _find_previous_editable_phase_id(self, program, current_phase_id: int) -> Optional[int]:
         phases = list(getattr(program, "phases", []))
         n_phases = len(phases)
         if n_phases == 0:
@@ -441,28 +472,35 @@ class SumoTazEnvV7(EnvBase):
 
         idx = (int(current_phase_id) - 1) % n_phases
         for _ in range(n_phases):
-            if self._is_green_phase_state(getattr(phases[idx], "state", "")):
+            if self._is_editable_phase_state(getattr(phases[idx], "state", "")):
                 return idx
             idx = (idx - 1) % n_phases
         return None
 
+    def _find_previous_green_phase_id(self, program, current_phase_id: int) -> Optional[int]:
+        return self._find_previous_editable_phase_id(program, current_phase_id)
+
     def _discretize_actions(self, action_tensor: torch.Tensor) -> torch.Tensor:
         return torch.where(
-            action_tensor < -13.0,
+            action_tensor < -12.5,
             torch.full_like(action_tensor, -15.0),
             torch.where(
-                action_tensor < -3.0,
+                action_tensor < -7.5,
                 torch.full_like(action_tensor, -10.0),
                 torch.where(
-                    action_tensor < 0.0,
+                    action_tensor < -2.5,
                     torch.full_like(action_tensor, -5.0),
                     torch.where(
-                        action_tensor < 3.0,
-                        torch.full_like(action_tensor, 5.0),
+                        action_tensor < 2.5,
+                        torch.full_like(action_tensor, 0.0),
                         torch.where(
-                            action_tensor < 13.0,
-                            torch.full_like(action_tensor, 10.0),
-                            torch.full_like(action_tensor, 15.0),
+                            action_tensor < 7.5,
+                            torch.full_like(action_tensor, 5.0),
+                            torch.where(
+                                action_tensor < 12.5,
+                                torch.full_like(action_tensor, 10.0),
+                                torch.full_like(action_tensor, 15.0),
+                            ),
                         ),
                     ),
                 ),
@@ -492,6 +530,156 @@ class SumoTazEnvV7(EnvBase):
         self._phase_duration_memory[tls_id] = durations
         self._active_program_id[tls_id] = program_id
 
+    def _reset_duration_diagnostics(self):
+        self._episode_phase_initial_durations = {}
+        self._episode_phase_cumulative_abs_deltas = {}
+        self._episode_phase_signed_deltas = {}
+        self._episode_phase_nonzero_updates = {}
+        self._episode_phase_sign_flips = {}
+        self._episode_phase_last_nonzero_sign = {}
+        self._episode_duration_events = {}
+
+        for tls_id, durations in self._phase_duration_memory.items():
+            phase_count = len(durations)
+            self._episode_phase_initial_durations[tls_id] = [float(x) for x in durations]
+            self._episode_phase_cumulative_abs_deltas[tls_id] = [0.0 for _ in range(phase_count)]
+            self._episode_phase_signed_deltas[tls_id] = [0.0 for _ in range(phase_count)]
+            self._episode_phase_nonzero_updates[tls_id] = [0 for _ in range(phase_count)]
+            self._episode_phase_sign_flips[tls_id] = [0 for _ in range(phase_count)]
+            self._episode_phase_last_nonzero_sign[tls_id] = [0 for _ in range(phase_count)]
+            self._episode_duration_events[tls_id] = []
+
+    def _record_duration_event(
+        self,
+        tls_id: str,
+        target_phase_id: int,
+        requested_delta: float,
+        base_duration: float,
+        applied_duration: float,
+    ):
+        initial = self._episode_phase_initial_durations.get(tls_id)
+        cumulative = self._episode_phase_cumulative_abs_deltas.get(tls_id)
+        signed = self._episode_phase_signed_deltas.get(tls_id)
+        nonzero = self._episode_phase_nonzero_updates.get(tls_id)
+        flips = self._episode_phase_sign_flips.get(tls_id)
+        last_signs = self._episode_phase_last_nonzero_sign.get(tls_id)
+        if (
+            initial is None
+            or cumulative is None
+            or signed is None
+            or nonzero is None
+            or flips is None
+            or last_signs is None
+            or target_phase_id < 0
+            or target_phase_id >= len(initial)
+        ):
+            return
+
+        applied_delta = float(applied_duration - base_duration)
+        self._episode_duration_events.setdefault(tls_id, []).append(
+            {
+                "control_step": int(self.current_step),
+                "phase_id": int(target_phase_id),
+                "requested_delta": float(requested_delta),
+                "applied_delta": float(applied_delta),
+                "base_duration": float(base_duration),
+                "applied_duration": float(applied_duration),
+            }
+        )
+
+        if abs(applied_delta) <= 1e-9:
+            return
+
+        cumulative[target_phase_id] += abs(applied_delta)
+        signed[target_phase_id] += applied_delta
+        nonzero[target_phase_id] += 1
+
+        sign = 1 if applied_delta > 0.0 else -1
+        prev_sign = int(last_signs[target_phase_id])
+        if prev_sign != 0 and prev_sign != sign:
+            flips[target_phase_id] += 1
+        last_signs[target_phase_id] = sign
+
+    def get_episode_duration_diagnostics(self) -> dict:
+        per_tls = {}
+        summary_net_abs = []
+        summary_cumulative_abs = []
+        summary_ratio = []
+        summary_sign_flips = []
+        summary_nonzero_updates = []
+        reverted_count = 0
+        changed_count = 0
+
+        for tls_id in self.tls_list:
+            initial = [float(x) for x in self._episode_phase_initial_durations.get(tls_id, [])]
+            final = [float(x) for x in self._phase_duration_memory.get(tls_id, initial)]
+            phase_count = min(len(initial), len(final))
+            if len(initial) != phase_count:
+                initial = initial[:phase_count]
+            if len(final) != phase_count:
+                final = final[:phase_count]
+
+            net_deltas = [float(f - i) for i, f in zip(initial, final)]
+            cumulative_abs = [float(x) for x in self._episode_phase_cumulative_abs_deltas.get(tls_id, [0.0 for _ in range(phase_count)])][:phase_count]
+            signed_deltas = [float(x) for x in self._episode_phase_signed_deltas.get(tls_id, [0.0 for _ in range(phase_count)])][:phase_count]
+            nonzero_updates = [int(x) for x in self._episode_phase_nonzero_updates.get(tls_id, [0 for _ in range(phase_count)])][:phase_count]
+            sign_flips = [int(x) for x in self._episode_phase_sign_flips.get(tls_id, [0 for _ in range(phase_count)])][:phase_count]
+
+            total_net_abs = float(sum(abs(x) for x in net_deltas))
+            total_cumulative_abs = float(sum(cumulative_abs))
+            net_to_cumulative_ratio = (
+                float(total_net_abs / total_cumulative_abs)
+                if total_cumulative_abs > 1e-9 else 0.0
+            )
+            total_sign_flips = int(sum(sign_flips))
+            total_nonzero_updates = int(sum(nonzero_updates))
+            reverted_to_initial = bool(total_net_abs <= 1e-9)
+            changed = bool(total_cumulative_abs > 1e-9)
+
+            if reverted_to_initial:
+                reverted_count += 1
+            if changed:
+                changed_count += 1
+
+            summary_net_abs.append(total_net_abs)
+            summary_cumulative_abs.append(total_cumulative_abs)
+            summary_ratio.append(net_to_cumulative_ratio)
+            summary_sign_flips.append(float(total_sign_flips))
+            summary_nonzero_updates.append(float(total_nonzero_updates))
+
+            per_tls[tls_id] = {
+                "initial_phase_durations": initial,
+                "final_phase_durations": final,
+                "phase_net_deltas": net_deltas,
+                "phase_signed_applied_deltas": signed_deltas,
+                "phase_cumulative_abs_deltas": cumulative_abs,
+                "phase_nonzero_updates": nonzero_updates,
+                "phase_sign_flips": sign_flips,
+                "total_net_abs_delta": total_net_abs,
+                "total_cumulative_abs_delta": total_cumulative_abs,
+                "net_to_cumulative_ratio": float(net_to_cumulative_ratio),
+                "total_sign_flips": total_sign_flips,
+                "total_nonzero_updates": total_nonzero_updates,
+                "reverted_to_initial": reverted_to_initial,
+                "changed": changed,
+                "events": list(self._episode_duration_events.get(tls_id, [])),
+            }
+
+        tls_count = max(len(self.tls_list), 1)
+        return {
+            "summary": {
+                "tls_count": int(len(self.tls_list)),
+                "mean_total_net_abs_delta": float(sum(summary_net_abs) / tls_count) if summary_net_abs else 0.0,
+                "mean_total_cumulative_abs_delta": float(sum(summary_cumulative_abs) / tls_count) if summary_cumulative_abs else 0.0,
+                "mean_net_to_cumulative_ratio": float(sum(summary_ratio) / tls_count) if summary_ratio else 0.0,
+                "mean_total_sign_flips": float(sum(summary_sign_flips) / tls_count) if summary_sign_flips else 0.0,
+                "mean_total_nonzero_updates": float(sum(summary_nonzero_updates) / tls_count) if summary_nonzero_updates else 0.0,
+                "reverted_tls_ratio": float(reverted_count / tls_count),
+                "changed_tls_ratio": float(changed_count / tls_count),
+            },
+            "per_tls": per_tls,
+        }
+
     def _apply_action_to_tls(self, tls_id: str, action_value: float) -> float:
         try:
             program, program_id = self._get_active_program_logic(tls_id)
@@ -516,11 +704,11 @@ class SumoTazEnvV7(EnvBase):
         current_phase_id = int(program.currentPhaseIndex)
         target_phase_id = current_phase_id
         current_phase = program.phases[current_phase_id]
-        if not self._is_green_phase_state(current_phase.state):
-            prev_green_phase_id = self._find_previous_green_phase_id(program, current_phase_id)
-            if prev_green_phase_id is None:
+        if not self._is_editable_phase_state(current_phase.state):
+            prev_editable_phase_id = self._find_previous_editable_phase_id(program, current_phase_id)
+            if prev_editable_phase_id is None:
                 return 0.0
-            target_phase_id = int(prev_green_phase_id)
+            target_phase_id = int(prev_editable_phase_id)
 
         base = self._safe_float(
             phase_memory[target_phase_id],
@@ -532,7 +720,17 @@ class SumoTazEnvV7(EnvBase):
         applied_duration = float(new_dur)
         try:
             for i, ph in enumerate(list(program.phases)):
-                d = int(np.clip(self._phase_duration_memory[tls_id][i], self.min_green, self.max_green))
+                stored_duration = self._safe_float(
+                    self._phase_duration_memory[tls_id][i],
+                    self._safe_float(getattr(ph, "duration", 0.0), 0.0),
+                )
+                if i == target_phase_id and self._is_editable_phase_state(getattr(ph, "state", "")):
+                    d = self._normalize_phase_duration_value(new_dur, fallback=stored_duration)
+                else:
+                    d = self._normalize_phase_duration_value(
+                        stored_duration,
+                        fallback=self._safe_float(getattr(ph, "duration", 0.0), 1.0),
+                    )
                 ph.maxDur = d
                 ph.minDur = d
                 ph.duration = d
@@ -542,7 +740,7 @@ class SumoTazEnvV7(EnvBase):
                 pass
             libtraci.trafficlight.setProgramLogic(tls_id, program)
 
-            if target_phase_id == current_phase_id:
+            if target_phase_id == current_phase_id and self._is_editable_phase_state(current_phase.state):
                 try:
                     libtraci.trafficlight.setPhaseDuration(tls_id, float(new_dur))
                 except Exception:
@@ -550,11 +748,12 @@ class SumoTazEnvV7(EnvBase):
 
             after_program, _ = self._get_active_program_logic(tls_id)
             if after_program is not None:
+                self._sync_phase_duration_memory(tls_id)
+                synced_memory = self._phase_duration_memory.get(tls_id, [])
                 applied_duration = self._safe_float(
-                    after_program.phases[target_phase_id].duration,
-                    float(new_dur),
+                    synced_memory[target_phase_id] if target_phase_id < len(synced_memory) else float(new_dur),
+                    self._safe_float(after_program.phases[target_phase_id].duration, float(new_dur)),
                 )
-                self._phase_duration_memory[tls_id][target_phase_id] = float(applied_duration)
         except Exception:
             try:
                 self.sumo.set_tls_phase_duration(tls_id, target_phase_id, new_dur)
@@ -566,6 +765,13 @@ class SumoTazEnvV7(EnvBase):
             "phase_id": target_phase_id,
             "phase_duration": float(applied_duration),
         }
+        self._record_duration_event(
+            tls_id=tls_id,
+            target_phase_id=target_phase_id,
+            requested_delta=float(action_value),
+            base_duration=float(base),
+            applied_duration=float(applied_duration),
+        )
         return float(applied_duration - base)
 
     # ---------- observation ----------
@@ -592,7 +798,7 @@ class SumoTazEnvV7(EnvBase):
         phase_duration_for_obs = current_phase_duration
         metrics_for_obs = dict(aggregated)
 
-        if self._is_green_phase_state(current_phase_state):
+        if self._is_editable_phase_state(current_phase_state):
             self._last_green_tls_snapshot[tls_id] = {
                 "phase_id": phase_id_for_obs,
                 "phase_duration": phase_duration_for_obs,
@@ -604,11 +810,11 @@ class SumoTazEnvV7(EnvBase):
             }
         else:
             if program is not None:
-                prev_green_phase_id = self._find_previous_green_phase_id(program, current_phase_id)
-                if prev_green_phase_id is not None:
-                    phase_id_for_obs = int(prev_green_phase_id)
+                prev_editable_phase_id = self._find_previous_editable_phase_id(program, current_phase_id)
+                if prev_editable_phase_id is not None:
+                    phase_id_for_obs = int(prev_editable_phase_id)
                     phase_duration_for_obs = self._safe_float(
-                        program.phases[prev_green_phase_id].duration,
+                        program.phases[prev_editable_phase_id].duration,
                         phase_duration_for_obs,
                     )
 
@@ -925,6 +1131,8 @@ class SumoTazEnvV7(EnvBase):
             self.sumo.end()
 
         _, baseline_components = self._compute_terminal_reward()
+        self.last_reward_components = dict(baseline_components)
+        self.last_duration_diagnostics = self.get_episode_duration_diagnostics()
         baseline_penalty = float(baseline_components.get("penalty", 0.0))
         return baseline_penalty, baseline_components
 
@@ -945,7 +1153,9 @@ class SumoTazEnvV7(EnvBase):
         self._active_program_id = {}
         for tls in self.tls_list:
             self._sync_phase_duration_memory(tls)
+        self._reset_duration_diagnostics()
         self.last_reward_components = {}
+        self.last_duration_diagnostics = {}
         self._episode_max_jam_len = 0.0
         self._last_taz_metrics_by_id = {taz: self._zero_taz_metrics() for taz in self.taz_ids}
 
@@ -994,6 +1204,7 @@ class SumoTazEnvV7(EnvBase):
                 }
             )
             self.last_reward_components = reward_components
+            self.last_duration_diagnostics = self.get_episode_duration_diagnostics()
         else:
             self.last_reward_components = {
                 "is_terminal_reward": False,
@@ -1002,6 +1213,7 @@ class SumoTazEnvV7(EnvBase):
                 "num_taz": int(len(self.taz_ids)),
                 "num_tls": int(len(self.tls_list)),
             }
+            self.last_duration_diagnostics = {}
 
         return TensorDict(
             {
