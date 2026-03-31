@@ -92,7 +92,9 @@ class Simulator:
         # Keep the listener object available but do not auto-register it here.
 
     def start(self, activeGui: bool = False, logFilePath: Optional[str] = None, noWarnings: bool = True,
-              continuous: bool = False, rl_mode: bool = False, traceCommands: bool = False):
+              continuous: bool = False, rl_mode: bool = False, traceCommands: bool = False,
+              waitingTimeMemory: Optional[int] = None, seed: Optional[int] = None,
+              threadRngs: Optional[int] = None):
         """
         Start the SUMO environment simulation, with or without the GUI, based on the `activeGui` parameter.
         If a simulation is already loaded, it will be overwritten.
@@ -122,6 +124,12 @@ class Simulator:
                 command = [sumo_command, "-c", os.path.join(self.configurationPath, "run_rl.sumocfg")]
             else:
                 command = [sumo_command, "-c", os.path.join(self.configurationPath, "run.sumocfg")]
+        if waitingTimeMemory is not None:
+            command.extend(["--waiting-time-memory", str(max(int(waitingTimeMemory), 1))])
+        if seed is not None:
+            command.extend(["--seed", str(int(seed))])
+        if threadRngs is not None:
+            command.extend(["--thread-rngs", str(max(int(threadRngs), 1))])
         # Set the log file path if specified
         self.logFile = logFilePath if logFilePath else self.logFile
 

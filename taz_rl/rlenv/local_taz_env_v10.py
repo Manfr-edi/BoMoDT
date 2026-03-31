@@ -30,8 +30,8 @@ class SumoTazEnvV10(EnvBase):
       - terminal bonus aligned with a no-agent baseline on the same route/hour
     """
 
-    ACTION_BIN_VALUES = (-10.0, -5.0, 0.0, 5.0, 10.0)
-    ZERO_ACTION_INDEX = 2
+    ACTION_BIN_VALUES = (-5.0, 0.0, 5.0)
+    ZERO_ACTION_INDEX = 1
 
     def __init__(
         self,
@@ -39,6 +39,7 @@ class SumoTazEnvV10(EnvBase):
         stepSize: int = 300,
         device: str = "cpu",
         taz_map_path: str = TAZ_FILE,
+        selected_taz_ids: Optional[list[str]] = None,
         speed_norm: float = 10.0,
         jam_norm: float = 10.0,
         warmupSteps: int = 0,
@@ -71,6 +72,10 @@ class SumoTazEnvV10(EnvBase):
         taz_veh_total_ref: float = 2500.0,
         taz_std_occupancy_ref: float = 0.25,
         max_jam_len_ref: float = 120.0,
+        waiting_time_memory: int = 3600,
+        action_signal_threshold: float = 0.03,
+        sumo_seed: Optional[int] = None,
+        sumo_thread_rngs: Optional[int] = None,
         tls_add_path: str = SUMO_NETWORK_PATH + "/optimized_tls.add.xml",
         **kwargs,
     ):
@@ -110,6 +115,10 @@ class SumoTazEnvV10(EnvBase):
         self.taz_veh_total_ref = max(float(taz_veh_total_ref), 1e-6)
         self.taz_std_occupancy_ref = max(float(taz_std_occupancy_ref), 1e-6)
         self.max_jam_len_ref = max(float(max_jam_len_ref), 1e-6)
+        self.waiting_time_memory = max(int(waiting_time_memory), 1)
+        self.action_signal_threshold = max(float(action_signal_threshold), 0.0)
+        self.sumo_seed = int(sumo_seed) if sumo_seed is not None else None
+        self.sumo_thread_rngs = int(sumo_thread_rngs) if sumo_thread_rngs is not None else None
         self.tls_add_path = str(tls_add_path)
         self.waiting_ref = 60.0
 
@@ -136,7 +145,9 @@ class SumoTazEnvV10(EnvBase):
         self.emission_nox_mix_weight /= emission_mix_sum
 
         self.taz_map_path = str(taz_map_path)
-        self.taz_tls_map = self._load_taz_tls_map(self.taz_map_path)
+        self.selected_taz_ids = [str(taz_id) for taz_id in (selected_taz_ids or [])]
+        raw_taz_tls_map = self._load_taz_tls_map(self.taz_map_path)
+        self.taz_tls_map = self._filter_taz_tls_map(raw_taz_tls_map, self.selected_taz_ids)
         self.taz_ids = list(self.taz_tls_map.keys())
         self.tls_list = self._build_unique_tls_list(self.taz_tls_map)
         if len(self.tls_list) == 0:
@@ -154,7 +165,7 @@ class SumoTazEnvV10(EnvBase):
         self.tls_by_taz = {taz: list(self.taz_tls_map[taz]) for taz in self.taz_ids}
         self.max_tls_per_taz = max(len(v) for v in self.tls_by_taz.values())
         self.per_tls_feature_dim = 1 + self.max_num_phases + 11
-        self.per_taz_feature_dim = 10
+        self.per_taz_feature_dim = 14
         self.agent_obs_dim = self.max_tls_per_taz * self.per_tls_feature_dim + self.per_taz_feature_dim
 
         self.observation_spec = UnboundedSpec(
@@ -175,6 +186,7 @@ class SumoTazEnvV10(EnvBase):
             row = [True] * valid + [False] * (self.max_tls_per_taz - valid)
             action_mask.append(row)
         self._action_mask = torch.tensor(action_mask, dtype=torch.bool, device=self.device)
+        self._current_action_mask = self._action_mask.clone()
         self.action_bins = torch.tensor(self.ACTION_BIN_VALUES, dtype=torch.float32, device=self.device)
 
         self.current_hour = 0
@@ -186,6 +198,13 @@ class SumoTazEnvV10(EnvBase):
         self.reference_penalty = None
         self.reference_reward_components = {}
         self._prev_taz_penalties = np.zeros(len(self.taz_ids), dtype=np.float32)
+        self._prev_action_taz_metrics = None
+        self._action_signal_by_taz = {
+            taz: 0.0
+            for taz in self.taz_ids
+        }
+        self._episode_vehicle_waiting_by_id = {}
+        self._episode_vehicle_taz_by_id = {}
         self._tls_lanes = {tls: set() for tls in self.tls_list}
         self._lane_to_tls_idx = {}
         self._edge_to_tls_idx = {}
@@ -246,6 +265,33 @@ class SumoTazEnvV10(EnvBase):
         }
 
     @staticmethod
+    def _filter_taz_tls_map(taz_tls_map: dict, selected_taz_ids: list[str]) -> dict:
+        if not selected_taz_ids:
+            return dict(taz_tls_map)
+
+        requested = []
+        seen = set()
+        for taz_id in selected_taz_ids:
+            key = str(taz_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            requested.append(key)
+
+        filtered = {
+            taz_id: list(tls_ids)
+            for taz_id, tls_ids in taz_tls_map.items()
+            if str(taz_id) in seen
+        }
+        missing = [taz_id for taz_id in requested if taz_id not in filtered]
+        if missing:
+            available = ", ".join(sorted(str(k) for k in taz_tls_map.keys()))
+            raise ValueError(
+                f"Selected TAZ IDs not found: {missing}. Available TAZ IDs: {available}"
+            )
+        return filtered
+
+    @staticmethod
     def _zero_tls_metrics(taz_id: Optional[str] = None) -> dict:
         return {
             "taz_id": str(taz_id) if taz_id is not None else None,
@@ -298,7 +344,7 @@ class SumoTazEnvV10(EnvBase):
         return list(self.tls_list)
 
     def get_action_mask(self) -> torch.Tensor:
-        return self._action_mask.clone()
+        return self._current_action_mask.clone()
 
     def decode_action_indices(self, action_index: torch.Tensor) -> torch.Tensor:
         return self.action_bins[action_index.long().clamp(0, len(self.ACTION_BIN_VALUES) - 1)]
@@ -479,6 +525,26 @@ class SumoTazEnvV10(EnvBase):
             return
         self._phase_duration_memory[tls_id] = durations
         self._active_program_id[tls_id] = program_id
+
+    def _get_phase_spent_duration(self, tls_id: str) -> float:
+        try:
+            spent = self._safe_float(libtraci.trafficlight.getSpentDuration(tls_id), 0.0)
+            if spent >= 0.0:
+                return float(spent)
+        except Exception:
+            pass
+
+        # Fallback when direct spent-duration API is unavailable.
+        try:
+            next_switch = self._safe_float(libtraci.trafficlight.getNextSwitch(tls_id), np.nan)
+            sim_time = self._safe_float(libtraci.simulation.getTime(), np.nan)
+            total_duration = self._safe_float(libtraci.trafficlight.getPhaseDuration(tls_id), np.nan)
+            if np.isfinite(next_switch) and np.isfinite(sim_time) and np.isfinite(total_duration):
+                remaining = max(next_switch - sim_time, 0.0)
+                return float(max(total_duration - remaining, 0.0))
+        except Exception:
+            pass
+        return 0.0
 
     def _reset_duration_diagnostics(self):
         self._episode_phase_initial_durations = {}
@@ -686,11 +752,14 @@ class SumoTazEnvV10(EnvBase):
         current_phase_id = int(program.currentPhaseIndex)
         target_phase_id = current_phase_id
         current_phase = program.phases[current_phase_id]
+        spent_duration = 0.0
         if not self._is_editable_phase_state(current_phase.state):
             prev_editable_phase_id = self._find_previous_editable_phase_id(program, current_phase_id)
             if prev_editable_phase_id is None:
                 return 0.0
             target_phase_id = int(prev_editable_phase_id)
+        else:
+            spent_duration = self._get_phase_spent_duration(tls_id)
 
         base = self._safe_float(
             phase_memory[target_phase_id],
@@ -698,6 +767,10 @@ class SumoTazEnvV10(EnvBase):
         )
         new_dur = int(np.clip(base + float(action_value), self.min_green, self.max_green))
         self._phase_duration_memory[tls_id][target_phase_id] = float(new_dur)
+        remaining_after_update = max(float(new_dur) - float(spent_duration), 0.0)
+        remaining_after_update = float(
+            self._normalize_phase_duration_value(remaining_after_update, fallback=1.0)
+        )
 
         applied_duration = float(new_dur)
         try:
@@ -724,7 +797,8 @@ class SumoTazEnvV10(EnvBase):
 
             if target_phase_id == current_phase_id and self._is_editable_phase_state(current_phase.state):
                 try:
-                    libtraci.trafficlight.setPhaseDuration(tls_id, float(new_dur))
+                    # Apply only the remaining time so the current phase does not restart from zero.
+                    libtraci.trafficlight.setPhaseDuration(tls_id, remaining_after_update)
                 except Exception:
                     pass
 
@@ -795,13 +869,19 @@ class SumoTazEnvV10(EnvBase):
                 continue
 
             try:
-                waiting_time = self._safe_float(libtraci.vehicle.getWaitingTime(vehicle_id), 0.0)
+                # SUMO accumulated waiting time depends on --waiting-time-memory.
+                waiting_time = self._safe_float(libtraci.vehicle.getAccumulatedWaitingTime(vehicle_id), 0.0)
                 co2 = self._safe_float(libtraci.vehicle.getCO2Emission(vehicle_id), 0.0)
                 nox = self._safe_float(libtraci.vehicle.getNOxEmission(vehicle_id), 0.0)
             except Exception:
                 continue
 
             tls_id = self.tls_list[int(tls_idx)]
+            taz_id = self.tls_to_taz.get(tls_id)
+            prev_waiting = self._safe_float(self._episode_vehicle_waiting_by_id.get(vehicle_id, 0.0), 0.0)
+            self._episode_vehicle_waiting_by_id[vehicle_id] = float(max(prev_waiting, waiting_time))
+            if taz_id is not None:
+                self._episode_vehicle_taz_by_id[vehicle_id] = str(taz_id)
             metrics_by_tls[tls_id]["active_vehicle_count"] += 1.0
             metrics_by_tls[tls_id]["total_waiting_time"] += float(waiting_time)
             metrics_by_tls[tls_id]["total_co2"] += float(co2)
@@ -929,6 +1009,86 @@ class SumoTazEnvV10(EnvBase):
             }
         return metrics_by_taz
 
+    def _get_episode_waiting_metrics(self) -> dict:
+        totals_by_taz = {
+            taz: 0.0
+            for taz in self.taz_ids
+        }
+        counts_by_taz = {
+            taz: 0
+            for taz in self.taz_ids
+        }
+
+        for vehicle_id, waiting_time in self._episode_vehicle_waiting_by_id.items():
+            taz_id = self._episode_vehicle_taz_by_id.get(vehicle_id)
+            if taz_id not in totals_by_taz:
+                continue
+            totals_by_taz[taz_id] += float(waiting_time)
+            counts_by_taz[taz_id] += 1
+
+        total_waiting_time = float(sum(totals_by_taz.values()))
+        vehicle_count = int(sum(counts_by_taz.values()))
+        avg_waiting_time = total_waiting_time / float(vehicle_count) if vehicle_count > 0 else 0.0
+        return {
+            "vehicle_count": int(vehicle_count),
+            "avg_waiting_time": float(avg_waiting_time),
+            "total_waiting_time": float(total_waiting_time),
+            "waiting_time_by_taz": {
+                taz: float(totals_by_taz[taz])
+                for taz in self.taz_ids
+            },
+            "vehicle_count_by_taz": {
+                taz: int(counts_by_taz[taz])
+                for taz in self.taz_ids
+            },
+        }
+
+    def _clone_taz_metrics_snapshot(self) -> dict:
+        return {
+            taz: {
+                key: self._safe_float(value, 0.0)
+                for key, value in metrics.items()
+            }
+            for taz, metrics in self._last_taz_metrics_by_id.items()
+        }
+
+    def _build_runtime_action_mask(self) -> torch.Tensor:
+        runtime_mask = self._action_mask.clone()
+        self._action_signal_by_taz = {
+            taz: 0.0
+            for taz in self.taz_ids
+        }
+        if self._prev_action_taz_metrics is None:
+            # Allow control from the first decision step instead of forcing a no-op rollout prefix.
+            return runtime_mask
+
+        for taz_idx, taz in enumerate(self.taz_ids):
+            current = self._last_taz_metrics_by_id.get(taz, self._zero_taz_metrics())
+            previous = self._prev_action_taz_metrics.get(taz, self._zero_taz_metrics())
+
+            waiting_delta = abs(
+                self._safe_float(current.get("total_waiting_time", 0.0), 0.0)
+                - self._safe_float(previous.get("total_waiting_time", 0.0), 0.0)
+            ) / self.taz_waiting_time_ref
+            active_delta = abs(
+                self._safe_float(current.get("active_vehicle_count", 0.0), 0.0)
+                - self._safe_float(previous.get("active_vehicle_count", 0.0), 0.0)
+            ) / self.taz_veh_total_ref
+            jam_delta = abs(
+                self._safe_float(current.get("max_jam_len", 0.0), 0.0)
+                - self._safe_float(previous.get("max_jam_len", 0.0), 0.0)
+            ) / self.max_jam_len_ref
+            speed_delta = abs(
+                self._safe_float(current.get("mean_speed", 0.0), 0.0)
+                - self._safe_float(previous.get("mean_speed", 0.0), 0.0)
+            ) / self.speed_norm
+
+            signal = waiting_delta + 0.5 * active_delta + 0.5 * jam_delta + 0.25 * speed_delta
+            self._action_signal_by_taz[taz] = float(signal)
+            if signal < self.action_signal_threshold:
+                runtime_mask[taz_idx, :] = False
+        return runtime_mask
+
     def _build_taz_penalties(self):
         penalties = []
         details = {}
@@ -989,6 +1149,7 @@ class SumoTazEnvV10(EnvBase):
                 taz: self._zero_taz_metrics()
                 for taz in self.taz_ids
             }
+            self._current_action_mask = torch.zeros_like(self._action_mask, dtype=torch.bool, device=self.device)
             return torch.zeros(self.observation_spec.shape, dtype=torch.float32, device=self.device)
 
         raw_by_taz = {}
@@ -1058,8 +1219,45 @@ class SumoTazEnvV10(EnvBase):
                     row.extend([0.0] * self.per_tls_feature_dim)
 
             taz_metrics = self._last_taz_metrics_by_id[taz]
+            prev_taz_metrics = (
+                self._prev_action_taz_metrics.get(taz, self._zero_taz_metrics())
+                if self._prev_action_taz_metrics is not None else
+                self._zero_taz_metrics()
+            )
             t_occ_norm = taz_metrics["mean_occupancy"] / 100.0 if taz_metrics["mean_occupancy"] > 1.5 else taz_metrics["mean_occupancy"]
             t_occ_norm = self._clip01(t_occ_norm)
+            waiting_delta_norm = float(np.clip(
+                (
+                    self._safe_float(taz_metrics.get("total_waiting_time", 0.0), 0.0)
+                    - self._safe_float(prev_taz_metrics.get("total_waiting_time", 0.0), 0.0)
+                ) / self.taz_waiting_time_ref,
+                -5.0,
+                5.0,
+            ))
+            active_delta_norm = float(np.clip(
+                (
+                    self._safe_float(taz_metrics.get("active_vehicle_count", 0.0), 0.0)
+                    - self._safe_float(prev_taz_metrics.get("active_vehicle_count", 0.0), 0.0)
+                ) / self.taz_veh_total_ref,
+                -5.0,
+                5.0,
+            ))
+            jam_delta_norm = float(np.clip(
+                (
+                    self._safe_float(taz_metrics.get("max_jam_len", 0.0), 0.0)
+                    - self._safe_float(prev_taz_metrics.get("max_jam_len", 0.0), 0.0)
+                ) / self.max_jam_len_ref,
+                -2.0,
+                2.0,
+            ))
+            speed_delta_norm = float(np.clip(
+                (
+                    self._safe_float(taz_metrics.get("mean_speed", 0.0), 0.0)
+                    - self._safe_float(prev_taz_metrics.get("mean_speed", 0.0), 0.0)
+                ) / self.speed_norm,
+                -2.0,
+                2.0,
+            ))
             row.extend(
                 [
                     float(np.clip(self._safe_float(taz_metrics.get("max_jam_len", 0.0), 0.0) / self.jam_norm, 0.0, 2.0)),
@@ -1072,6 +1270,10 @@ class SumoTazEnvV10(EnvBase):
                     float(np.clip(self._safe_float(taz_metrics.get("total_nox", 0.0), 0.0) / self.taz_nox_ref, 0.0, 5.0)),
                     hour_sin,
                     hour_cos,
+                    waiting_delta_norm,
+                    active_delta_norm,
+                    jam_delta_norm,
+                    speed_delta_norm,
                 ]
             )
             self._episode_max_jam_len = max(
@@ -1083,6 +1285,8 @@ class SumoTazEnvV10(EnvBase):
         obs_tensor = torch.tensor(obs_rows, dtype=torch.float32, device=self.device)
         if not torch.isfinite(obs_tensor).all():
             obs_tensor = torch.nan_to_num(obs_tensor, nan=0.0, posinf=10.0, neginf=-10.0)
+        self._current_action_mask = self._build_runtime_action_mask()
+        self._prev_action_taz_metrics = self._clone_taz_metrics_snapshot()
         return obs_tensor
 
     def _get_output_dir(self) -> Optional[str]:
@@ -1165,6 +1369,31 @@ class SumoTazEnvV10(EnvBase):
     def _normalize_metric(self, value: float, ref: float) -> float:
         return float(np.clip(float(value) / float(ref), 0.0, self.metric_clip))
 
+    def _describe_step_reward_basis(self) -> str:
+        dense_terms = []
+        if self.dense_abs_penalty_weight > 0.0:
+            dense_terms.append("abs")
+        if self.dense_delta_reward_weight > 0.0:
+            dense_terms.append("delta")
+        if not dense_terms:
+            dense_terms.append("none")
+
+        metrics = []
+        if self.waiting_reward_weight > 0.0:
+            metrics.append("waiting")
+        if self.emission_reward_weight > 0.0:
+            metrics.append("emission")
+        if self.jam_reward_weight > 0.0:
+            metrics.append("jam")
+        metric_label = "+".join(metrics) if metrics else "none"
+
+        basis = f"taz_step_{'+'.join(dense_terms)}_{metric_label}"
+        if self.terminal_bonus_weight > 0.0:
+            basis += "_with_terminal"
+        if self.comparison_reward_enabled:
+            basis += "_baseline_compare"
+        return basis
+
     def _compute_terminal_reward(self) -> tuple[float, dict]:
         output_dir = self._get_output_dir()
         if output_dir is None:
@@ -1175,19 +1404,20 @@ class SumoTazEnvV10(EnvBase):
 
         tripinfo_path = os.path.join(output_dir, self.tripinfo_filename)
         emission_path = os.path.join(output_dir, self.emission_filename)
-        trip = self._parse_tripinfo_metrics(tripinfo_path)
+        waiting = self._get_episode_waiting_metrics()
         co2 = self._parse_emission_metric(emission_path, "CO2")
         nox = self._parse_emission_metric(emission_path, "NOx")
-        parse_ok = bool(trip["ok"] and co2["ok"] and nox["ok"])
+        waiting_ok = bool(waiting["vehicle_count"] > 0)
+        parse_ok = bool(waiting_ok and co2["ok"] and nox["ok"])
         if not parse_ok:
             return 0.0, {
                 "parse_ok": False,
-                "reason": "missing_or_invalid_tripinfo_or_emission",
+                "reason": "missing_or_invalid_waiting_or_emission",
                 "tripinfo_path": tripinfo_path,
                 "emission_path": emission_path,
             }
 
-        waiting_penalty = self._normalize_metric(trip["total_waiting_time"], self.terminal_waiting_time_ref)
+        waiting_penalty = self._normalize_metric(waiting["total_waiting_time"], self.terminal_waiting_time_ref)
         co2_penalty = self._normalize_metric(co2["total_emission"], self.terminal_co2_ref)
         nox_penalty = self._normalize_metric(nox["total_emission"], self.terminal_nox_ref)
         emission_penalty = (
@@ -1209,9 +1439,12 @@ class SumoTazEnvV10(EnvBase):
         components = {
             "parse_ok": True,
             "reward_basis": "baseline_waiting_emission_jam_delta" if use_comparison else "absolute_waiting_emission_jam_penalty",
-            "trip_count": int(trip["trip_count"]),
-            "avg_waiting_time": float(trip["avg_waiting_time"]),
-            "total_waiting_time": float(trip["total_waiting_time"]),
+            "trip_count": int(waiting["vehicle_count"]),
+            "avg_waiting_time": float(waiting["avg_waiting_time"]),
+            "total_waiting_time": float(waiting["total_waiting_time"]),
+            "waiting_metric_source": "live_accumulated_waiting_time",
+            "waiting_time_by_taz": dict(waiting["waiting_time_by_taz"]),
+            "vehicle_count_by_taz": dict(waiting["vehicle_count_by_taz"]),
             "total_co2": float(co2["total_emission"]),
             "total_nox": float(nox["total_emission"]),
             "episode_max_jam_len": float(self._episode_max_jam_len),
@@ -1264,7 +1497,14 @@ class SumoTazEnvV10(EnvBase):
         if self.sumo.isLoaded():
             self.sumo.end()
 
-        self.sumo.start(activeGui=False, logFilePath=self.sumo.logFile, rl_mode=True)
+        self.sumo.start(
+            activeGui=False,
+            logFilePath=self.sumo.logFile,
+            rl_mode=True,
+            waitingTimeMemory=self.waiting_time_memory,
+            seed=self.sumo_seed,
+            threadRngs=self.sumo_thread_rngs,
+        )
         self.current_step = 0
         self._last_green_tls_snapshot = {}
         self._phase_duration_memory = {}
@@ -1276,6 +1516,14 @@ class SumoTazEnvV10(EnvBase):
         self.last_reward_components = {}
         self.last_duration_diagnostics = {}
         self._episode_max_jam_len = 0.0
+        self._prev_action_taz_metrics = None
+        self._action_signal_by_taz = {
+            taz: 0.0
+            for taz in self.taz_ids
+        }
+        self._current_action_mask = torch.zeros_like(self._action_mask, dtype=torch.bool, device=self.device)
+        self._episode_vehicle_waiting_by_id = {}
+        self._episode_vehicle_taz_by_id = {}
         self._last_tls_metrics_by_id = {
             tls: self._zero_tls_metrics(taz_id=self.tls_to_taz.get(tls))
             for tls in self.tls_list
@@ -1304,7 +1552,8 @@ class SumoTazEnvV10(EnvBase):
         action = action.to(self.device).reshape(len(self.taz_ids), self.max_tls_per_taz)
         action_index = torch.round(action).long().clamp(0, len(self.ACTION_BIN_VALUES) - 1)
         zero_index = torch.full_like(action_index, self.ZERO_ACTION_INDEX)
-        action_index = torch.where(self._action_mask, action_index, zero_index)
+        runtime_action_mask = self.get_action_mask()
+        action_index = torch.where(runtime_action_mask, action_index, zero_index)
         selected_action = self.decode_action_indices(action_index)
 
         applied_action = torch.zeros_like(selected_action)
@@ -1359,8 +1608,10 @@ class SumoTazEnvV10(EnvBase):
             for idx, taz in enumerate(self.taz_ids)
         }
 
+        reward_basis = self._describe_step_reward_basis()
+
         self.last_reward_components = {
-            "reward_basis": "taz_absolute_penalty_plus_delta_with_terminal_baseline_bonus",
+            "reward_basis": reward_basis,
             "reward_by_taz": reward_by_taz,
             "dense_reward_by_taz": dense_reward_by_taz,
             "penalty_by_taz": penalty_by_taz,
@@ -1382,6 +1633,8 @@ class SumoTazEnvV10(EnvBase):
             "terminal_reward": terminal_components,
             "reference_penalty": float(self.reference_penalty) if self.reference_penalty is not None else None,
             "reference_reward_components": dict(self.reference_reward_components),
+            "action_signal_by_taz": dict(self._action_signal_by_taz),
+            "action_enabled_ratio": float(self._current_action_mask.float().mean().item()),
             "episode_steps": int(self.current_step),
             "num_taz": int(len(self.taz_ids)),
             "num_tls": int(len(self.tls_list)),

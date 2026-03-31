@@ -5,7 +5,7 @@
     <input>
         <net-file value="../static/full.net.xml"/>
         <route-files value="../routes/10-00-11-00/generatedRoutes.rou.xml"/>
-        <additional-files value="../static/detectors.add.xml, ../static/output_taz.add.xml"/>
+        <additional-files value="../static/E2Detector.xml, ../static/output_taz.add.xml"/>
     </input>
 
     <output>
