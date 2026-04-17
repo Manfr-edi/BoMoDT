@@ -2,7 +2,7 @@ pandas==2.2.2
 ngsildclient==0.5.2
 requests~=2.32.3
 traci~=1.20.0
-psycopg2==2.9.9
+#psycopg2==2.9.9
 geojson~=2.5.0
 django~=4.1.13
 mongoengine==0.29.1

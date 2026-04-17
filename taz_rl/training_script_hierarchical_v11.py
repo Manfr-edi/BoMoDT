@@ -67,7 +67,7 @@ from taz_rl.training_script_ppo_v11 import (
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-TRAINING_MODE = "global_only"  # "global_only" or "joint_finetune"
+TRAINING_MODE = "joint_finetune"  # "global_only" or "joint_finetune"
 
 LOAD_LOCAL_POLICY = True
 LOCAL_POLICY_CHECKPOINT_PATH = os.path.join(
@@ -138,7 +138,7 @@ def _entropy_coef_now(episode_idx: int, total_episodes: int, start_value: float,
 def _safe_load_checkpoint(path: str) -> dict:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Checkpoint not found: {path}")
-    return torch.load(path, map_location="cpu", weights_only=True)
+    return torch.load(path, map_location="cuda:0", weights_only=True)
 
 
 def _load_policy_weights(policy: torch.nn.Module, checkpoint_path: str, label: str) -> dict:

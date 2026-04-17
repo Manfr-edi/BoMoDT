@@ -1,4 +1,5 @@
 import csv
+import copy
 import json
 import math
 import os
@@ -8,66 +9,117 @@ from typing import Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 from tensordict import TensorDict
+from torch.distributions import Categorical
 
 from libraries import constants
 from libraries.classes.Planner import Planner
 from libraries.classes.SumoSimulator import Simulator
-from libraries.constants import EDGE_DATA_FILE_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH
+from libraries.constants import EDGE_DATA_FILE_PATH, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, SUMO_PATH
 from libraries.utils.preprocessingUtils import generateEdgeDataFile
 from taz_rl.rlenv.local_taz_env_v11 import SumoTazEnvV11
-from taz_rl.training_script_ppo_v10 import (
-    ActorCriticV10,
-    ENV_V10_CONFIG,
-    BASE_DEMAND,
-    CLIP_RATIO,
-    ENTROPY_COEF,
-    ENTROPY_COEF_FINAL,
-    ENTROPY_WARMUP_RATIO,
-    GAMMA,
-    LAMBDA,
-    LEGACY_ROUTE_CACHE_ROOTS,
-    LR,
-    MINIBATCH_SIZE,
-    PPO_UPDATE_EPOCHS,
-    ROUTE_CACHE_ROOT,
-    ROUTE_RANDOM_TRIP_SEED,
-    ROUTE_SAMPLER_SEED,
-    ROUTE_SAMPLER_THREADS,
-    TARGET_KL,
-    VALUE_COEF,
-    HOURLY_DEMAND_PROFILE,
-    _clone_state_dict_to_cpu,
-    _move_optimizer_state_to_device,
-    compute_gae,
-    ppo_update,
-)
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+# ==================== EXPERIMENT CONFIGURATION ====================
+# This block defines the date range, hourly slices, and training scope for v11 runs.
 TRAIN_START_DATE = datetime(2024, 2, 1)
 N_TRAIN_DAYS = 200
-FOCUS_HOURS = [8]
-TRAIN_ON_SAME_DAY = True
+FOCUS_HOURS = [7, 8]
+TRAIN_ON_SAME_DAY = False
+TRAIN_DAY_FILTER = "weekdays"  # "all", "weekdays", "weekends"
 SINGLE_TAZ_ID = None
 SINGLE_TAZ_WAITING_ONLY_REWARD = False
 
+# Traffic-demand settings used to generate or reuse deterministic SUMO routes.
+HOURLY_DEMAND_PROFILE = {
+    0: 0.2, 1: 0.15, 2: 0.1, 3: 0.1, 4: 0.2,
+    5: 0.4, 6: 0.7, 7: 1.2, 8: 1.5,
+    9: 1.0, 10: 0.8, 11: 0.9,
+    12: 1.1, 13: 1.0, 14: 0.9, 15: 1.0,
+    16: 1.3, 17: 1.6, 18: 1.4, 19: 1.0,
+    20: 0.8, 21: 0.6, 22: 0.4, 23: 0.3,
+}
+BASE_DEMAND = 5000
 DEMAND_NOISE_RANGE = (1.0, 1.0)
 GLOBAL_SEED = 42
 REUSE_DETERMINISTIC_ROUTE_FILES = True
+ROUTE_RANDOM_TRIP_SEED = 42
+ROUTE_SAMPLER_SEED = 42
+ROUTE_SAMPLER_THREADS = 1
+ROUTE_CACHE_ROOT = os.path.join(SUMO_PATH, "routes_v10_deterministic")
+LEGACY_ROUTE_CACHE_ROOTS = [
+    os.path.join(SUMO_PATH, "routes_v9_deterministic"),
+    os.path.join(SUMO_PATH, "routes_v8_deterministic"),
+    os.path.join(SUMO_PATH, "routes_v7_deterministic"),
+]
 
+# v11 keeps the same dense reward backbone as v10 and adds coordinated control groups.
 ACTION_BINS = tuple(float(x) for x in SumoTazEnvV11.ACTION_BIN_VALUES)
-
-ENV_V11_CONFIG = dict(ENV_V10_CONFIG)
-ENV_V11_CONFIG.update(
+ENV_V11_CONFIG = dict(
+    speed_norm=10.0,
+    jam_norm=10.0,
+    warmupSteps=0,
+    cooldownSteps=12,
+    min_green=25,
+    max_green=120,
+    metric_clip=2.0,
+    reward_clip=4.0,
+    dense_abs_penalty_weight=1.0,
+    dense_delta_reward_weight=0.15,
+    terminal_bonus_weight=1.0,
+    comparison_reward_enabled=True,
+    waiting_reward_weight=0.0,
+    emission_reward_weight=1.0,
+    jam_reward_weight=0.0,
+    emission_co2_mix_weight=0.50,
+    emission_nox_mix_weight=0.50,
+    tls_waiting_time_ref=1000.0,
+    tls_co2_ref=80000.0,
+    tls_nox_ref=40.0,
+    tls_active_vehicle_ref=80.0,
+    taz_waiting_time_ref=6000.0,
+    taz_co2_ref=300000.0,
+    taz_nox_ref=150.0,
+    terminal_waiting_time_ref=500000.0,
+    terminal_co2_ref=5000000000.0,
+    terminal_nox_ref=1800000.0,
+    tls_veh_total_ref=120.0,
+    tls_pressure_ref=10000.0,
+    taz_veh_total_ref=2500.0,
+    taz_std_occupancy_ref=0.25,
+    max_jam_len_ref=120.0,
+    waiting_time_memory=3600,
+    action_signal_threshold=0.0,
+    sumo_seed=GLOBAL_SEED,
+    sumo_thread_rngs=1,
     coordination_distance=350.0,
     coordination_path_length=900.0,
     coordination_group_max_size=3,
     group_axis_align_only=True,
 )
 
+# PPO hyperparameters for the coordinated local controller.
+GAMMA = 0.99
+LAMBDA = 0.95
+LR = 2e-4
+CLIP_RATIO = 0.12
+ENTROPY_COEF = 0.008
+ENTROPY_COEF_FINAL = 0.001
+ENTROPY_WARMUP_RATIO = 0.25
+VALUE_COEF = 0.5
+MAX_GRAD_NORM = 0.5
+TARGET_KL = 0.015
+PPO_UPDATE_EPOCHS = 4
+MINIBATCH_SIZE = 64
+
+EXTRACTOR_HIDDEN = 256
+EXTRACTOR_OUT = 128
+
+# Checkpoint and resume settings.
 LOAD_MODEL = False
 RUN_SUFFIX = f"_single_{SINGLE_TAZ_ID}" if SINGLE_TAZ_ID else ""
 CHECKPOINT_PATH = os.path.join(SCRIPT_DIR, f"checkpoints_v11{RUN_SUFFIX}", "checkpoint_ppo_v11_final.pt")
@@ -75,6 +127,219 @@ RESUME_FROM_CHECKPOINT_EPISODE = True
 START_EPISODE_OVERRIDE = None
 
 
+# ==================== POLICY MODEL ====================
+# The policy keeps one shared encoder and predicts both grouped actions and value estimates.
+class FeatureExtractor(nn.Module):
+    """Encode each TAZ observation vector into a compact latent representation."""
+
+    def __init__(self, obs_dim: int, hidden_dim: int = 256, out_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(obs_dim),
+            nn.Linear(obs_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_dim),
+            nn.GELU(),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        return self.net(obs)
+
+
+class ActorCriticV11(nn.Module):
+    """Shared actor-critic module used by v11 with the coordinated group action bins."""
+
+    def __init__(self, obs_dim: int, act_dim: int, action_bins: tuple[float, ...]):
+        super().__init__()
+        self.num_bins = int(len(action_bins))
+        self.zero_action_index = int(action_bins.index(0.0))
+        self.extractor = FeatureExtractor(obs_dim, hidden_dim=EXTRACTOR_HIDDEN, out_dim=EXTRACTOR_OUT)
+        self.actor = nn.Sequential(
+            nn.Linear(EXTRACTOR_OUT, 64),
+            nn.GELU(),
+            nn.Linear(64, 32),
+            nn.GELU(),
+        )
+        self.logits_head = nn.Linear(32, act_dim * self.num_bins)
+        self.critic = nn.Sequential(
+            nn.Linear(EXTRACTOR_OUT, 64),
+            nn.GELU(),
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, 1),
+        )
+        self.act_dim = int(act_dim)
+        self.register_buffer("action_bins", torch.tensor(action_bins, dtype=torch.float32), persistent=False)
+
+        nn.init.orthogonal_(self.logits_head.weight, gain=0.01)
+        nn.init.constant_(self.logits_head.bias, 0.0)
+
+    def _apply_action_mask(self, logits: torch.Tensor, action_mask: torch.Tensor | None) -> torch.Tensor:
+        if action_mask is None:
+            return logits
+        valid_mask = action_mask.bool().unsqueeze(-1)
+        forced_logits = torch.full_like(logits, -1e9)
+        forced_logits[..., self.zero_action_index] = 0.0
+        return torch.where(valid_mask, logits, forced_logits)
+
+    def forward(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
+        feat = self.extractor(obs)
+        logits = self.logits_head(self.actor(feat)).reshape(-1, self.act_dim, self.num_bins)
+        logits = self._apply_action_mask(logits, action_mask)
+        value = self.critic(feat).squeeze(-1)
+        return logits, value
+
+    def act(self, obs: torch.Tensor, action_mask: torch.Tensor, deterministic: bool = False):
+        logits, value = self.forward(obs, action_mask)
+        dist = Categorical(logits=logits)
+        action_index = logits.argmax(dim=-1) if deterministic else dist.sample()
+        valid_mask = action_mask.bool()
+        action_index = torch.where(valid_mask, action_index, torch.full_like(action_index, self.zero_action_index))
+        logp = (dist.log_prob(action_index) * valid_mask.to(dtype=logits.dtype)).sum(dim=-1)
+        return action_index, logp, value
+
+    def evaluate(self, obs: torch.Tensor, actions: torch.Tensor, action_mask: torch.Tensor):
+        logits, value = self.forward(obs, action_mask)
+        dist = Categorical(logits=logits)
+        valid_mask = action_mask.bool()
+        safe_actions = torch.where(valid_mask, actions.long(), torch.full_like(actions.long(), self.zero_action_index))
+        logp = (dist.log_prob(safe_actions) * valid_mask.to(dtype=logits.dtype)).sum(dim=-1)
+        entropy = (dist.entropy() * valid_mask.to(dtype=logits.dtype)).sum(dim=-1)
+        return logp, value, entropy
+
+    def action_values(self, action_indices: torch.Tensor) -> torch.Tensor:
+        """Map discrete action-bin indices back to the physical green-time deltas."""
+        safe_indices = action_indices.long().clamp(0, self.num_bins - 1)
+        return self.action_bins[safe_indices]
+
+
+ActorCriticV10 = ActorCriticV11
+
+
+# ==================== PPO HELPERS ====================
+# These helpers implement the PPO update and training-tensor bookkeeping used by the v11 loop.
+def compute_gae(rewards, values, dones, gamma=0.99, lam=0.95):
+    """Compute generalized advantage estimates for a multi-TAZ rollout."""
+    t_max, n_agents = rewards.shape
+    adv = torch.zeros_like(rewards)
+    gae = torch.zeros(n_agents, dtype=rewards.dtype, device=rewards.device)
+    next_value = torch.zeros(n_agents, dtype=rewards.dtype, device=rewards.device)
+
+    for t_idx in reversed(range(t_max)):
+        mask = 1.0 - dones[t_idx]
+        delta = rewards[t_idx] + gamma * next_value * mask - values[t_idx]
+        gae = delta + gamma * lam * mask * gae
+        adv[t_idx] = gae
+        next_value = values[t_idx]
+    returns = adv + values
+    return adv, returns
+
+
+def ppo_update(
+    policy,
+    optim,
+    obs,
+    action_mask,
+    act,
+    logp_old,
+    adv,
+    ret,
+    clip_ratio=0.2,
+    ppo_epochs=4,
+    minibatch_size=256,
+    entropy_coef=0.01,
+    value_coef=0.5,
+    target_kl=None,
+):
+    """Run one PPO optimization phase over the flattened rollout batch."""
+    n_samples = obs.shape[0]
+    idx = torch.arange(n_samples, device=obs.device)
+    clip_fracs = []
+    kls = []
+    entropies = []
+    last_policy_loss = 0.0
+    last_value_loss = 0.0
+    last_total_loss = 0.0
+
+    batch_size = min(int(minibatch_size), n_samples)
+    planned_updates = int(ppo_epochs) * max(int(math.ceil(n_samples / batch_size)), 1)
+    performed_updates = 0
+    early_stop = False
+    epochs_performed = 0
+
+    for epoch_idx in range(int(ppo_epochs)):
+        perm = idx[torch.randperm(n_samples)]
+        epoch_kls = []
+        for start in range(0, n_samples, batch_size):
+            mb_idx = perm[start:start + batch_size]
+            logp, values, entropy = policy.evaluate(obs[mb_idx], act[mb_idx], action_mask[mb_idx])
+            ratio = torch.exp(torch.clamp(logp - logp_old[mb_idx], -20.0, 20.0))
+            surr1 = ratio * adv[mb_idx]
+            surr2 = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * adv[mb_idx]
+            policy_loss = -torch.min(surr1, surr2).mean()
+            value_loss = nn.functional.mse_loss(values, ret[mb_idx])
+            entropy_loss = -entropy.mean() * entropy_coef
+            total_loss = policy_loss + value_coef * value_loss + entropy_loss
+
+            optim.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), MAX_GRAD_NORM)
+            optim.step()
+            performed_updates += 1
+
+            clipped = (torch.abs(ratio - 1.0) > clip_ratio).float().mean().item()
+            approx_kl = (logp_old[mb_idx] - logp).mean().item()
+            epoch_kls.append(float(approx_kl))
+            clip_fracs.append(float(clipped))
+            kls.append(float(approx_kl))
+            entropies.append(float(entropy.mean().item()))
+            last_policy_loss = float(policy_loss.item())
+            last_value_loss = float(value_loss.item())
+            last_total_loss = float(total_loss.item())
+
+        epochs_performed += 1
+        epoch_mean_kl = float(np.mean(epoch_kls)) if epoch_kls else 0.0
+        if target_kl is not None and epoch_mean_kl > float(target_kl) * 1.25 and epoch_idx >= 1:
+            early_stop = True
+            break
+
+    return {
+        "total_loss": float(last_total_loss),
+        "policy_loss": float(last_policy_loss),
+        "value_loss": float(last_value_loss),
+        "clip_fraction": float(np.mean(clip_fracs)) if clip_fracs else 0.0,
+        "approx_kl": float(np.mean(kls)) if kls else 0.0,
+        "entropy_mean": float(np.mean(entropies)) if entropies else 0.0,
+        "early_stop": bool(early_stop),
+        "epochs_performed": int(epochs_performed),
+        "epochs_planned": int(ppo_epochs),
+        "update_fraction": float(performed_updates / max(planned_updates, 1)),
+    }
+
+
+def _move_optimizer_state_to_device(optim: torch.optim.Optimizer, device: torch.device):
+    """Move optimizer buffers after loading checkpoints on a different device."""
+    for state in optim.state.values():
+        for key, value in list(state.items()):
+            if isinstance(value, torch.Tensor):
+                state[key] = value.to(device)
+
+
+def _clone_state_dict_to_cpu(state_dict: dict) -> dict:
+    """Detach and copy a state dict so the best-checkpoint snapshot is device-agnostic."""
+    cloned = {}
+    for key, value in state_dict.items():
+        if isinstance(value, torch.Tensor):
+            cloned[key] = value.detach().cpu().clone()
+        else:
+            cloned[key] = copy.deepcopy(value)
+    return cloned
+
+
+# ==================== TRAINING METRIC HELPERS ====================
+# These helpers summarize masked action statistics for logging, CSV export, and JSON details.
 def _masked_values(tensor: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     valid = tensor[mask]
     if valid.numel() > 0:
@@ -134,6 +399,7 @@ def _build_action_summary_by_taz(
 
 
 def _set_global_seed(seed: int):
+    """Seed Python, NumPy, and Torch to keep route generation and PPO updates reproducible."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -142,6 +408,7 @@ def _set_global_seed(seed: int):
 
 
 def _build_route_cache_folder(root: str, simulation_date: str, timeslot_clean: str, total_cars_random: int) -> str:
+    """Build the deterministic route-cache path used for one date, hour slot, and demand level."""
     return os.path.join(
         root,
         simulation_date,
@@ -152,6 +419,7 @@ def _build_route_cache_folder(root: str, simulation_date: str, timeslot_clean: s
 
 
 def _route_files_ready(route_folder_path: str) -> bool:
+    """Return True when the cached SUMO route triplets already exist on disk."""
     required = (
         "randomTrips.rou.xml",
         "trips.rou.xml",
@@ -161,6 +429,7 @@ def _route_files_ready(route_folder_path: str) -> bool:
 
 
 def _resolve_route_folder(simulation_date: str, timeslot_clean: str, total_cars_random: int) -> tuple[str, bool]:
+    """Reuse the first compatible route cache found, or return the canonical path to generate."""
     roots = [ROUTE_CACHE_ROOT] + list(LEGACY_ROUTE_CACHE_ROOTS)
     for root in roots:
         folder = _build_route_cache_folder(root, simulation_date, timeslot_clean, total_cars_random)
@@ -170,6 +439,7 @@ def _resolve_route_folder(simulation_date: str, timeslot_clean: str, total_cars_
 
 
 def _sample_demand_noise(episode_idx: int) -> float:
+    """Sample a deterministic multiplicative demand perturbation for an episode."""
     low, high = DEMAND_NOISE_RANGE
     if float(low) == float(high):
         return float(low)
@@ -177,9 +447,29 @@ def _sample_demand_noise(episode_idx: int) -> float:
     return float(rng.uniform(low, high))
 
 
+def _matches_train_day_filter(day: datetime) -> bool:
+    """Check whether the candidate day is allowed by the configured weekday/weekend filter."""
+    normalized_filter = str(TRAIN_DAY_FILTER).strip().lower()
+    if normalized_filter == "all":
+        return True
+    if normalized_filter == "weekdays":
+        return day.weekday() < 5
+    if normalized_filter == "weekends":
+        return day.weekday() >= 5
+    raise ValueError(
+        f"Unsupported TRAIN_DAY_FILTER={TRAIN_DAY_FILTER!r}. Expected one of: 'all', 'weekdays', 'weekends'."
+    )
+
+
 def _build_episode_schedule():
+    """Expand the configured date range into the ordered list of (day, hour) training episodes."""
     episodes = []
     if TRAIN_ON_SAME_DAY:
+        if not _matches_train_day_filter(TRAIN_START_DATE):
+            raise ValueError(
+                "TRAIN_ON_SAME_DAY=True is incompatible with the current TRAIN_DAY_FILTER because "
+                f"{TRAIN_START_DATE.strftime('%Y-%m-%d')} does not match {TRAIN_DAY_FILTER!r}."
+            )
         for episode_idx in range(N_TRAIN_DAYS):
             hour = FOCUS_HOURS[episode_idx % len(FOCUS_HOURS)]
             episodes.append((TRAIN_START_DATE, int(hour)))
@@ -187,12 +477,19 @@ def _build_episode_schedule():
 
     for day_offset in range(N_TRAIN_DAYS):
         day = TRAIN_START_DATE + timedelta(days=day_offset)
+        if not _matches_train_day_filter(day):
+            continue
         for hour in FOCUS_HOURS:
             episodes.append((day, int(hour)))
+    if not episodes:
+        raise ValueError(
+            "Episode schedule is empty. Check TRAIN_START_DATE, N_TRAIN_DAYS, FOCUS_HOURS, and TRAIN_DAY_FILTER."
+        )
     return episodes
 
 
 def _maybe_load_checkpoint(policy, optim, scheduler):
+    """Restore model and optimizer state when training resumes from an existing checkpoint."""
     start_episode = 0
     if not LOAD_MODEL:
         return start_episode
@@ -221,6 +518,7 @@ def _maybe_load_checkpoint(policy, optim, scheduler):
 
 
 def _load_existing_history(json_path: str) -> list[dict]:
+    """Load the existing JSON history if it is valid and compatible with the current run."""
     if not os.path.exists(json_path):
         return []
     try:
@@ -232,6 +530,7 @@ def _load_existing_history(json_path: str) -> list[dict]:
 
 
 def _rewrite_history_csv(csv_path: str, csv_cols: list[str], history: list[dict]):
+    """Rebuild the CSV history so resumed runs append from a clean, truncated file."""
     with open(csv_path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=csv_cols)
         writer.writeheader()
@@ -240,6 +539,7 @@ def _rewrite_history_csv(csv_path: str, csv_cols: list[str], history: list[dict]
 
 
 def _extract_terminal_penalty(row: dict) -> Optional[float]:
+    """Extract the numeric terminal penalty from a persisted history row when available."""
     if not bool(row.get("terminal_parse_ok", False)):
         return None
     try:
@@ -252,6 +552,7 @@ def _extract_terminal_penalty(row: dict) -> Optional[float]:
 
 
 def _prepare_history_files(csv_path: str, json_path: str, csv_cols: list[str], start_episode: int):
+    """Prepare CSV/JSON outputs and recover the current best terminal-penalty checkpoint target."""
     history = _load_existing_history(json_path) if LOAD_MODEL else []
     history = [row for row in history if int(row.get("episode", -1)) < int(start_episode)]
 
@@ -284,6 +585,7 @@ def _prepare_history_files(csv_path: str, json_path: str, csv_cols: list[str], s
 
 
 def _ensure_baseline_reference(env, sumo, hour: int, route_folder_path: str, cache: dict) -> tuple[Optional[float], dict, bool]:
+    """Run or reuse the no-agent baseline used by the terminal comparison reward."""
     if TRAIN_ON_SAME_DAY:
         key = ("same_day", int(hour))
     else:
@@ -302,6 +604,7 @@ def _ensure_baseline_reference(env, sumo, hour: int, route_folder_path: str, cac
 
 
 def main():
+    # Initialize deterministic state and connect the RL loop to the SUMO runtime.
     _set_global_seed(GLOBAL_SEED)
 
     sumo_standalone_dir = os.path.join(constants.SUMO_PATH, "standalone")
@@ -336,7 +639,8 @@ def main():
     obs_dim = int(env.agent_obs_dim)
     act_dim = int(env.max_control_groups_per_taz)
 
-    policy = ActorCriticV10(obs_dim, act_dim, ACTION_BINS).to(runtime_device)
+    # Build the local coordinated policy and restore checkpoints if requested.
+    policy = ActorCriticV11(obs_dim, act_dim, ACTION_BINS).to(runtime_device)
     policy.train()
     optim = torch.optim.Adam(policy.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -397,6 +701,14 @@ def main():
         f"action_signal_threshold={env_config['action_signal_threshold']} | "
         f"terminal_bonus_weight={env_config['terminal_bonus_weight']}"
     )
+    print(
+        f"[INFO] Schedule: same_day={TRAIN_ON_SAME_DAY} | "
+        f"day_filter={TRAIN_DAY_FILTER} | "
+        f"start_date={TRAIN_START_DATE.strftime('%Y-%m-%d')} | "
+        f"focus_hours={FOCUS_HOURS} | "
+        f"configured_days={N_TRAIN_DAYS} | "
+        f"episodes={n_episodes}"
+    )
 
     for episode_idx in range(start_episode, n_episodes):
         episode_num = episode_idx + 1
@@ -416,6 +728,7 @@ def main():
         )
         os.makedirs(os.path.join(route_folder_path, "output"), exist_ok=True)
 
+        # Resolve the demand scenario for this episode by reusing cached routes whenever possible.
         if REUSE_DETERMINISTIC_ROUTE_FILES and not should_generate_routes:
             print(f"[ROUTE CACHE] RL V11 EP {episode_num}/{n_episodes} | {route_folder_path}")
         else:
@@ -432,6 +745,7 @@ def main():
                 routeSamplerThreads=ROUTE_SAMPLER_THREADS,
             )
 
+        # Evaluate or reuse the no-agent baseline before the RL rollout so comparison rewards stay aligned.
         baseline_penalty, baseline_components, baseline_ran = _ensure_baseline_reference(
             env=env,
             sumo=sumo,
@@ -456,6 +770,7 @@ def main():
         print(f"[RL RUN] RL V11 EP {episode_num}/{n_episodes} | Starting coordinated-group RL simulation.")
         td = env.reset()
 
+        # Collect one full on-policy trajectory across all controlled TAZs.
         rewards_list = []
         values_list = []
         logps_list = []
@@ -528,6 +843,7 @@ def main():
                 pass
             continue
 
+        # Flatten the multi-step rollout into a PPO batch and compute advantages/returns.
         rewards_t = torch.stack(rewards_list)
         values_t = torch.stack(values_list)
         dones_t = torch.stack(dones_list)
@@ -556,6 +872,7 @@ def main():
             decay_progress = (progress - ENTROPY_WARMUP_RATIO) / max(1.0 - ENTROPY_WARMUP_RATIO, 1e-8)
             entropy_coef_now = ENTROPY_COEF + (ENTROPY_COEF_FINAL - ENTROPY_COEF) * decay_progress
 
+        # Run the PPO update phase using the most recent rollout snapshot.
         stats = ppo_update(
             policy,
             optim,
@@ -579,6 +896,7 @@ def main():
         scheduler.step(reward_mean)
         lr_after_step = float(optim.param_groups[0]["lr"])
 
+        # Summarize rewards and action usage for persistent logging.
         reward_components = dict(getattr(env, "last_reward_components", {}) or {})
         dense_reward_by_taz = dict(reward_components.get("dense_reward_by_taz", {}) or {})
         penalty_by_taz = dict(reward_components.get("penalty_by_taz", {}) or {})
@@ -632,6 +950,7 @@ def main():
                 indent=2,
             )
 
+        # Append the compact episode record to CSV and JSON histories.
         penalty_vector = torch.tensor([float(penalty_by_taz.get(taz, 0.0)) for taz in taz_ids], dtype=torch.float32)
         row = {
             "episode": int(episode_idx),
@@ -687,6 +1006,7 @@ def main():
         with open(json_path, "w", encoding="utf-8") as handle:
             json.dump(history, handle, indent=2)
 
+        # Save both per-episode checkpoints and the best pre-update rollout policy seen so far.
         checkpoint_payload = {
             "episode": int(episode_idx),
             "model_state_dict": policy.state_dict(),
@@ -697,6 +1017,7 @@ def main():
             "checkpoint_selection_metric": "lowest_terminal_penalty",
             "env_config": env_config,
             "focus_hours": FOCUS_HOURS,
+            "train_day_filter": TRAIN_DAY_FILTER,
             "taz_ids": taz_ids,
             "tls_ids": tls_ids,
             "tls_count": len(tls_ids),
@@ -739,6 +1060,7 @@ def main():
             msg += f" | VsBaseline {comparison_delta_penalty:.4f}"
         print(msg)
 
+    # Always close SUMO cleanly and persist the final training snapshot.
     try:
         env.sumo.end()
     except Exception:
@@ -753,6 +1075,7 @@ def main():
             "history_len": len(history),
             "env_config": env_config,
             "focus_hours": FOCUS_HOURS,
+            "train_day_filter": TRAIN_DAY_FILTER,
             "taz_ids": taz_ids,
             "tls_ids": tls_ids,
             "tls_count": len(tls_ids),
