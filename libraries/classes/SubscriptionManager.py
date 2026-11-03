@@ -56,7 +56,7 @@ class QuantumLeapManager:
                 SubscriptionBuilder(notificationurl)
                 .description(description)
                 .select_type(entityType)
-                .watch([attribute])
+                .watch([attribute, 'timingId'])
                 .build()
             )
             newSubscription = cbConnection.subscriptions.create(subscriptionPayload)

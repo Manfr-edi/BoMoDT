@@ -141,10 +141,12 @@ services:
       - GF_SECURITY_COOKIE_SAMESITE=true
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=bomodt-flow-panel
     volumes:
     - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
     - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
     - ./grafana/dashboards:/var/lib/grafana/dashboards
+    - ./grafana/plugins/bomodt-flow-panel:/var/lib/grafana/plugins/bomodt-flow-panel:ro
 
   iot-agent:
     image: quay.io/fiware/iotagent-json:latest
@@ -172,6 +174,7 @@ services:
         - IOTA_MONGO_HOST=mongo-db
         - IOTA_MONGO_PORT=27017
         - IOTA_MONGO_DB=iotagentjson
+        - IOTA_MONGO_URI=mongodb://mongo-db:${MONGO_DB_PORT}/iotagentjson
         - IOTA_HTTP_PORT=${IOTA_SOUTH_PORT}
         - IOTA_PROVIDER_URL=http://iot-agent:4041
         #- IOTA_DEFAULT_RESOURCE=/iot/json

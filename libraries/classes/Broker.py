@@ -182,7 +182,8 @@ class Broker:
             self.entitiesList.append((entityType, newNumber))
 
     def updateContext(self, deviceID:str, date: str, timeSlot: str, trafficFlow: int, coordinates: List[float], laneDirection: str,
-                      taz: str, cbConnection: Optional[Client]) -> bool:
+                      taz: str, cbConnection: Optional[Client], timing_id: Optional[str] = None,
+                      timing_session: Optional[str] = None) -> bool:
         """
         Update the existing Context entities based on data received from physical devices through the IoT Agent.
 
@@ -220,11 +221,17 @@ class Broker:
             if entityRoad is not None:
                 entityRoadSegment = self.searchEntity(cbConnection=cbConnection, dataSearch=edgeID, eType="RoadSegment")
                 if entityRoadSegment is not None:
+                    if timing_id:
+                        entityRoadSegment.prop('timingId', timing_id)
+                        entityRoadSegment.prop('timingSession', timing_session or '')
                     if self.updateFlow(cbConnection=cbConnection, newFlow=trafficFlow, date=completeDate,
                                        cEntity=entityRoadSegment, eType="RoadSegment", timeslot=timeSlot):
                         trafficFlowObsID = entityRoadSegment['refTrafficFlowObs'].value
                         trafficFlowObs = cbConnection.get(trafficFlowObsID)
                         if trafficFlowObs is not None:
+                            if timing_id:
+                                trafficFlowObs.prop('timingId', timing_id)
+                                trafficFlowObs.prop('timingSession', timing_session or '')
                             if self.updateFlow(cbConnection=cbConnection, newFlow=trafficFlow,
                                                    date=completeDate, cEntity=trafficFlowObs,
                                                    eType="TrafficFlowObserved", timeslot=timeSlot):
@@ -244,6 +251,11 @@ class Broker:
                     entityTrafficFlowObs=self.createTrafficFlowObsEntity(progressiveNumber=tfoNumber, direction=laneDirection, date=completeDate, trafficFlow=trafficFlow,trafficLoopID=deviceURN, roadSegmentID=entityRoadSegment.id, timeslot=timeSlot)
                     entityRoadSegment=self.updateRoadSegmentRelation(rsEntity=entityRoadSegment, roadID=entityRoad.id,traffiFlowObsID=entityTrafficFlowObs.id)
                     entityRoad=self.updateRoadRelation(rEntity=entityRoad, roadSegmentID=entityRoadSegment.id)
+                    if timing_id:
+                        entityRoadSegment.prop('timingId', timing_id)
+                        entityRoadSegment.prop('timingSession', timing_session or '')
+                        entityTrafficFlowObs.prop('timingId', timing_id)
+                        entityTrafficFlowObs.prop('timingSession', timing_session or '')
                     created = cbConnection.create([entityRoadSegment, entityTrafficFlowObs])
                     updated = cbConnection.update(entityRoad)
 
@@ -263,6 +275,11 @@ class Broker:
                 entityTrafficFlowObs = self.createTrafficFlowObsEntity(progressiveNumber=tfoNumber, direction=laneDirection, date=completeDate, trafficFlow=trafficFlow,trafficLoopID=deviceURN, roadSegmentID=entityRoadSegment.id, timeslot=timeSlot)
                 entityRoadSegment = self.updateRoadSegmentRelation(rsEntity=entityRoadSegment, roadID=entityRoad.id,traffiFlowObsID=entityTrafficFlowObs.id)
                 entityRoad = self.updateRoadRelation(rEntity=entityRoad, roadSegmentID=entityRoadSegment.id)
+                if timing_id:
+                    entityRoadSegment.prop('timingId', timing_id)
+                    entityRoadSegment.prop('timingSession', timing_session or '')
+                    entityTrafficFlowObs.prop('timingId', timing_id)
+                    entityTrafficFlowObs.prop('timingSession', timing_session or '')
                 cbConnection.create([entityRoad, entityRoadSegment, entityTrafficFlowObs])
                 self.updateProgressiveNumber("Road", rNumber)
                 self.updateProgressiveNumber("RoadSegment", rsNumber)

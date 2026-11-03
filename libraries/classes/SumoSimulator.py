@@ -178,6 +178,13 @@ class Simulator:
         :raises RuntimeError: If the simulation fails to resume or end.
         """
         while libtraci.simulation.getMinExpectedNumber() > 0:
+            control = getattr(self, 'control_callback', None)
+            if control:
+                try:
+                    control()
+                except InterruptedError:
+                    self.end()
+                    raise
             self.step()
         self.end()
 

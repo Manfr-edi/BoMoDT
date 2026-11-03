@@ -123,11 +123,25 @@
             <div class="card-header bg-primary text-white">
                 <strong>Execution Time Breakdown</strong>
             </div>
-            <div class="card-body d-flex align-items-center justify-content-center p-2">
-                <img src="{{ result_image_url }}"
-                     class="img-fluid rounded"
-                     alt="Execution Time Breakdown"
-                     style="max-height: 600px;">
+            <div class="card-body p-3 overflow-auto">
+                {% if execution_times %}
+                  {% for timing in timing_rows %}
+                    <div class="mb-3" data-timing-name="{{ timing.label }}" data-seconds="{{ timing.seconds|default_if_none:'' }}">
+                      <div class="d-flex justify-content-between gap-2">
+                        <strong>{{ timing.label }}</strong>
+                        <span class="timing-value">{% if timing.seconds != None %}{{ timing.seconds|floatformat:3 }} s{% else %}Not available{% endif %}</span>
+                      </div>
+                        <div class="timing-track" style="height: 10px; background: #e9ecef; border-radius: 4px; {% if timing.seconds == None %}display: none;{% endif %}" aria-hidden="true">
+                          <div class="timing-bar" style="height: 100%; width: {{ timing.width|stringformat:'s' }}%; background: #5794f2; border-radius: 4px;"></div>
+                        </div>
+                      <small class="timing-detail" style="font-size: .9rem;">{{ timing.detail }}</small>
+                    </div>
+                  {% endfor %}
+                  <small style="font-size: .85rem;">Baseline includes dashboard refresh and waiting for a visible panel. It is a per-measurement mean; the other values are totals for this run. These values are not additive. Artificial waits and result evaluation are excluded.</small>
+                {% else %}
+                  <p>Execution times were not recorded for this run.</p>
+                  <small>Run a new simulation to collect measured timings.</small>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -169,4 +183,33 @@
       </div>
     </div>
 </div>
+{% if execution_times and folder_name %}
+<script>
+  (function () {
+    const endpoint = "{% url 'execution_times' folder_name %}";
+    async function refreshTimings() {
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const response = await fetch(endpoint, {cache: 'no-store'});
+        if (!response.ok) return;
+        const data = await response.json();
+        const row = document.querySelector('[data-timing-name="Baseline"]');
+        const baseline = data.baseline;
+        row.querySelector('.timing-value').textContent = baseline.mean_seconds == null ? 'Not available' : baseline.mean_seconds.toFixed(3) + ' s';
+        row.querySelector('.timing-detail').textContent = 'Mean send-to-display latency · ' + baseline.count + ' rendered / ' + baseline.sent_count + ' sent samples';
+        const values = {Baseline: baseline.mean_seconds, Macromodeling: data.phases.macromodeling, Simulation: data.phases.simulation};
+        const maximum = Math.max(...Object.values(values).map(value => value || 0), 0.001);
+        Object.entries(values).forEach(function ([name, seconds]) {
+          const item = document.querySelector('[data-timing-name="' + name + '"]');
+          item.querySelector('.timing-track').style.display = seconds == null ? 'none' : 'block';
+          item.querySelector('.timing-bar').style.width = (100 * (seconds || 0) / maximum) + '%';
+        });
+      } catch (error) { console.warn('Execution timings could not be refreshed:', error.message); }
+    }
+    const timer = setInterval(refreshTimings, 5000);
+    window.addEventListener('pagehide', function () { clearInterval(timer); }, {once: true});
+    refreshTimings();
+  })();
+</script>
+{% endif %}
 {% endblock %}

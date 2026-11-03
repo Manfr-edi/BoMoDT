@@ -1,0 +1,16 @@
+{
+  "type": "panel",
+  "name": "BoMoDT measured traffic flow",
+  "id": "bomodt-flow-panel",
+  "info": {
+    "description": "Traffic flow with correlated first-frame latency acknowledgements",
+    "author": {"name": "BoMoDT"},
+    "keywords": ["traffic", "timing"],
+    "logos": {"small": "img/logo.svg", "large": "img/logo.svg"},
+    "links": [],
+    "screenshots": [],
+    "version": "1.0.2",
+    "updated": "2026-11-03"
+  },
+  "dependencies": {"grafanaDependency": ">=8.5.0", "plugins": []}
+}

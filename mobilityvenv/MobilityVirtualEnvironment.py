@@ -36,16 +36,19 @@ tempTimeSlot = str(datetime.time(0).strftime("%H:00"))+'-'+str(datetime.time(1).
 tlColumnsNames = ["index", "road_name", "direction", "geopoint", "ID_loop", "taz"]
 
 
-def setupPhysicalSystem(agentInstance: Agent) -> tuple[dict,list]:
+def setupPhysicalSystem(agentInstance: Agent, traffic_data=None, checkpoint=None) -> tuple[dict,list]:
     road = {}
     roadSensorIndex = {}
     trafficLoop = {}
     naturalNumber = 1
     keyLength = 26
 
-    [trafficData, files] = readingFiles(REAL_TRAFFIC_FLOW_DATA_MVENV_PATH)
+    if traffic_data is None:
+        trafficData, files = readingFiles(REAL_TRAFFIC_FLOW_DATA_MVENV_PATH)
+    else:
+        trafficData, files = {'selection': traffic_data.copy()}, ['selection']
     for i, file in enumerate(files):
-        trafficData[file] = trafficData[file][["index", "Nome via", "direzione", "geopoint","ID_univoco_stazione_spira",
+        trafficData[file] = trafficData[file].drop_duplicates(['ID_univoco_stazione_spira', 'Nome via'])[["index", "Nome via", "direzione", "geopoint","ID_univoco_stazione_spira",
                                                'codZone']]
         trafficData[file].columns = tlColumnsNames
 
@@ -58,6 +61,8 @@ def setupPhysicalSystem(agentInstance: Agent) -> tuple[dict,list]:
             trafficLoopKey = agentInstance.getServiceGroupKey("Device")
 
         for key, rows in trafficData[file].iterrows():
+            if checkpoint:
+                checkpoint()
             roadName = rows['road_name']
             if roadName not in road:
                 roadPartialIdentifier = "R{:03d}".format(naturalNumber)
@@ -83,6 +88,8 @@ def setupPhysicalSystem(agentInstance: Agent) -> tuple[dict,list]:
     deviceEntityType = "Device"
     for i in road:
         for sensor in road[i].sensors:
+            if checkpoint:
+                checkpoint()
             if not agentInstance.isDeviceRegistered(str(sensor.devicePartialID)):
                 # Service Group Registration
                 agentResponse = agentInstance.serviceGroupRegistration(api_key=sensor.apiKey, entity_type=deviceEntityType)
@@ -98,6 +105,12 @@ def setupPhysicalSystem(agentInstance: Agent) -> tuple[dict,list]:
                                                               controlled_asset=staticAttribute)
                     else:
                         raise TypeError("Only Traffic Flow sensors are allowed")
+            elif sensor.name == 'TL':
+                # Existing sensors also need newly introduced measurement attributes.
+                agentInstance.measurementRegistration(
+                    measure_type='trafficFlow', device_id=sensor.devicePartialID,
+                    entity_type=deviceEntityType, timezone='Europe/Rome',
+                    controlled_asset=f'urn:ngsi-ld:Road:{road[i].partialIdentifier}')
     return road, files
 
 def startPhysicalSystem(roads: dict[int, PhysicalSystemConnector]):

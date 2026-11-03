@@ -1,4 +1,5 @@
 import csv
+import time
 import math
 import os
 import os.path
@@ -37,7 +38,7 @@ class TrafficModeler:
     modelType: str
     date: str
     timeSlot: str
-    def __init__(self, simulator: Simulator, trafficDataFile: str, sumoNetFile : str, date: str = None, timeSlot: str = '00:00-23:00', modelType: str = "greenshield"):
+    def __init__(self, simulator: Simulator, trafficDataFile: str, sumoNetFile : str, date: str = None, timeSlot: str = '00:00-23:00', modelType: str = "greenshield", outputRoot: str = None):
         """
         Initializes the TrafficModeler, also deriving road parameters from the SUMO network
 
@@ -47,14 +48,19 @@ class TrafficModeler:
         :param modelType (str): Name of the traffic model to apply
         """
         self.simulator = simulator
+        self.outputRoot = outputRoot or SUMO_PATH
         trafficDataDf = pd.read_csv(trafficDataFile, sep=';')
+        self.trafficData = trafficDataDf
+        self.date = date
         if date is not None:
-            self.trafficData = trafficDataDf[trafficDataDf['data'].str.contains(date)]
-            self.date = date
+            self.trafficData = trafficDataDf[trafficDataDf['data'].eq(date)]
+        if self.trafficData.empty:
+            raise ValueError(f"No traffic measurements available for date {date} in {trafficDataFile}.")
         self.timeSlot = timeSlot
         self.timeSlot = self.timeSlot.replace(':', '-')
         self.sumoNet = sumolib.net.readNet(sumoNetFile)
         self.modelType = modelType
+        self.macromodeling_seconds = 0.0
         self.getMacroscopicModel()
 
 
@@ -72,6 +78,7 @@ class TrafficModeler:
         calculate macroscopic data according to a selected model. This is called when a instance of the class is created
         or the timeslot is changed
         """
+        started = time.perf_counter()
         self.macroscopicData = []
         for index, row in self.trafficData.iterrows():
             edge_id = row["edge_id"]
@@ -130,6 +137,8 @@ class TrafficModeler:
                 "velocity": velocity,
                 "normVelocity": normVelocity
             })
+
+        self.macromodeling_seconds += time.perf_counter() - started
 
     def saveTrafficData(self, outputDataPath: str):
     # TODO: set a name convention for saving new model data (e.g. greenshield_01-02-2024_00:00-23:00)
@@ -360,8 +369,8 @@ class TrafficModeler:
         folder_name = f"{self.date}_{self.modelType}_{modelType}_{tau}_{first_param}_{second_param}/{self.timeSlot}"
         conf_name = f"{self.date}_{self.modelType}_{modelType}_{tau}_{first_param}_{second_param}"
         # timeslot_folder = f"{self.timeSlot}"
-        folder_path = os.path.join(SUMO_PATH, folder_name)
-        conf_path = os.path.join(SUMO_PATH, conf_name)
+        folder_path = os.path.join(self.outputRoot, folder_name)
+        conf_path = os.path.join(self.outputRoot, conf_name)
         # folder_path = os.path.join(date_path, timeslot_folder)
         timeslot_name = f"{self.timeSlot}"
         route_path = os.path.join(SUMO_PATH + "/routes",timeslot_name)
@@ -393,15 +402,6 @@ class TrafficModeler:
                 "tau": tau,
                 "sigma": sigma,
                 "sigmaStep": sigmaStep
-            })
-        elif modelType == "IDM":
-            self.carFollowingModelType = "IDM"
-            carFollowModel = "IDM"
-            vtypeID = "customModel"
-            vtype = ET.SubElement(root, "vType", {
-                "id": vtypeID,
-                "carFollowModel": carFollowModel,
-                "tau": tau
             })
         elif modelType == "IDM":
             self.carFollowingModelType = "IDM"

@@ -37,6 +37,7 @@ class ScenarioGenerator:
         """
         self.sumoConfiguration = sumocfg
         self.sim = sim
+        self.routesRoot = constants.SUMO_ROUTES_PATH
 
 
     def defineScenarioFolder(self, congestioned: bool = False) -> str:
@@ -151,17 +152,17 @@ class ScenarioGenerator:
         #folder_name = f"{date}_{modelType}_{carFollowingModelType}/{timeSlot}"
         #folder_path = os.path.join("sumoenv/", folder_name)
         folder_name = f"{timeSlot}"
-        folder_path = os.path.join("sumoenv/routes", folder_name)
+        folder_path = os.path.join(self.routesRoot, folder_name)
         os.makedirs(folder_path, exist_ok=True)
         script = SUMO_TOOLS_PATH + "/randomTrips.py"
-        subprocess.run(['python', script, "-n", sumoNetPath, "-r", folder_path + "/randomTrips.rou.xml",
+        subprocess.run([sys.executable, script, "-n", sumoNetPath, "-r", folder_path + "/randomTrips.rou.xml",
                         "--output-trip-file", folder_path + "/trips.rou.xml",
                         "--trip-attributes", "type='customModel'",
                         "--random-departpos", "--random-arrivalpos",
                         "--allow-fringe", "--random",
                         "--remove-loops",
                         "--fringe-factor", "10", "--min-distance", "100", "--max-distance", "2000",
-                        "--random-routing-factor", "10", "--period", "0.1"])
+                        "--random-routing-factor", "10", "--period", "0.1"], check=True)
 
 
     def generateRoute(self, inputEdgePath: str, timeSlot: str, withInitialRoute=True, totalCount = 10000):
@@ -183,7 +184,7 @@ class ScenarioGenerator:
         folder_name = f"{timeSlot}"
         #folder_path = os.path.join("sumoenv/", folder_name)
 
-        folder_path = os.path.join(constants.SUMO_ROUTES_PATH, folder_name)
+        folder_path = os.path.join(self.routesRoot, folder_name)
         os.makedirs(folder_path, exist_ok=True)
         random_route_path = folder_path
         outputRoutePath = folder_path + "/generatedRoutes.rou.xml"
@@ -191,12 +192,15 @@ class ScenarioGenerator:
         type = "type='customModel'"
         process = subprocess.run([sys.executable, script, "--r", random_route_path + "/randomTrips.rou.xml",
                       "--edgedata-files", inputEdgePath, "-o",
-                      outputRoutePath, "--edgedata-attribute", "qPKW",
+                      outputRoutePath, "--edgedata-attribute", "entered",
                       "--write-flows", "number", "--attributes", type,
                       "--total-count", str(totalCount), "--optimize", "full", "--minimize-vehicles", "1",
                       "--threads", "8", "--verbose"],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
+                     text=True, check=True,
                      env=os.environ.copy(), bufsize=1)
+
+        if not os.path.isfile(outputRoutePath):
+            raise FileNotFoundError(f"SUMO route generation did not create '{outputRoutePath}'.")
 
         # process.wait()
 

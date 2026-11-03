@@ -1,4 +1,6 @@
 from django import forms
+import csv
+from libraries.constants import PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH
 
 # Definiamo le opzioni per gli enum
 MACROMODEL_CHOICES = [
@@ -65,11 +67,25 @@ class ConfigForm(forms.Form):
     # Selezione dello slot orario
     start_time = forms.ChoiceField(choices=TIME_SLOTS, label="Starting Time")
     end_time = forms.ChoiceField(choices=TIME_SLOTS, label="Ending Time")
+
+    def clean_data(self):
+        selected_date = self.cleaned_data['data']
+        with open(PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, newline='', encoding='utf-8-sig') as source:
+            available_dates = sorted({row['data'] for row in csv.DictReader(source, delimiter=';')})
+        if selected_date.isoformat() not in available_dates:
+            available_range = (
+                f" Available dates range from {available_dates[0]} to {available_dates[-1]}; some days may be missing."
+                if available_dates else " The dataset contains no measurements."
+            )
+            raise forms.ValidationError("No traffic measurements for the selected date." + available_range)
+        return selected_date
     # Validazione personalizzata: start_time deve essere < end_time
     def clean(self):
         cleaned_data = super().clean()
-        start = int(cleaned_data.get("start_time"))
-        end = int(cleaned_data.get("end_time"))
+        if cleaned_data.get("start_time") is None or cleaned_data.get("end_time") is None:
+            return cleaned_data
+        start = int(cleaned_data["start_time"])
+        end = int(cleaned_data["end_time"])
 
         if start >= end:
             raise forms.ValidationError("The start time must be less than the end time.")

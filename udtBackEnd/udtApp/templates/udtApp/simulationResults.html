@@ -20,6 +20,18 @@
 <link rel="stylesheet" href="{% static 'css/style.css' %}">
 <div class="container mt-4">
     <h2 class="text-center mb-4">Available Results</h2>
+    {% if emulation_sessions %}
+    <h3>Tempi delle emulazioni</h3>
+    <p>Misurati durante la trasmissione dei sensori. Apri una sessione per medie, copertura e dettaglio dei calcoli.</p>
+    <div class="table-responsive mb-4"><table class="table"><thead><tr><th>Periodo</th><th>Stato</th><th>Invii riusciti</th><th>Tempi</th></tr></thead><tbody>
+    {% for session in emulation_sessions %}<tr>
+      <td>{{ session.config.start_date }} → {{ session.config.end_date }}</td><td>{{ session.status }}</td>
+      <td>{{ session.progress.succeeded }} / {{ session.progress.total }}</td>
+      <td><a href="{% url 'index' %}?session_id={{ session.id }}">Apri sessione {{ session.id|slice:':8' }}</a></td>
+    </tr>{% endfor %}
+    </tbody></table></div>
+    {% endif %}
+    <h3>Simulazioni del Calibrator</h3>
 
     <div class="row">
     {% for folder in folders %}

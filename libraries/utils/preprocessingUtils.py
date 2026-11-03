@@ -411,7 +411,7 @@ def generateRealFlow(inputFile: str):
     df.to_csv(output_file, sep=';', index_label='index')
     print(f"Filtered real traffic flow data saved at '{output_file}'")
 
-def generateEdgeDataFile(input_file: str, date: str = "01/02/2024", time_slot: str = "00:00-01:00", duration: str = '3600'):
+def generateEdgeDataFile(input_file: str, date: str = "01/02/2024", time_slot: str = "00:00-01:00", duration: str = '3600', output_file: str = None):
     """
     Generate an XML `edgedata` file for the route sampler in Eclipse SUMO.
     This function creates an XML file that includes edge traffic data for the specified date and time slot, based on the
@@ -449,13 +449,14 @@ def generateEdgeDataFile(input_file: str, date: str = "01/02/2024", time_slot: s
         ET.SubElement(interval, 'edge', id=edge_id, entered=count)
 
     # Ensure the directory for the output file exists
-    os.makedirs(os.path.dirname(EDGE_DATA_FILE_PATH), exist_ok=True)
+    target_path = output_file or EDGE_DATA_FILE_PATH
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
     # Save the XML tree with indentation
     tree = ET.ElementTree(root)
     ET.indent(tree, '  ')
-    tree.write(EDGE_DATA_FILE_PATH, encoding="UTF-8", xml_declaration=True)
-    print(f"Edge data XML saved at '{EDGE_DATA_FILE_PATH}'")
+    tree.write(target_path, encoding="UTF-8", xml_declaration=True)
+    print(f"Edge data XML saved at '{target_path}'")
 
 def dailyFilter(inputFilePath: str, date: str):
     """

@@ -61,7 +61,7 @@
                       var fullID = document.getElementById("device-id").innerText;
 
                       // Costruisci l'URL per l'iframe con l'ID completo
-                      var grafanaURL = "http://localhost:3000/d/JeNeickHz/new-dashboard?orgId=1&var-edgeID=" + fullID;
+                      var grafanaURL = "http://localhost:3000/d/l8-g1tiHk/tfo-dashboard?orgId=1&var-entityID=" + encodeURIComponent(fullID.trim());
 
                       // Aggiorna l'iframe con il nuovo URL
                       document.getElementById("grafana-frame").src = grafanaURL;
@@ -77,7 +77,7 @@
         var itemType = document.getElementById("entity-type").innerText.trim();
 
         // Check if last segment (type) is "Device" or "Road"
-        if (itemType === 'Device') {
+        if (itemType === 'Device' || itemType === 'TrafficFlowObserved') {
         // Show the Grafana dashboard
         document.getElementById('dashboard').style.display = 'block';
         } else {

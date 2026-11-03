@@ -1,441 +1,471 @@
 {
-  "__inputs": [
-    {
-      "name": "postgresql",
-      "label": "PostgreSQL",
-      "description": "",
-      "type": "datasource",
-      "pluginId": "postgres",
-      "pluginName": "PostgreSQL"
-    }
-  ],
-  "__elements": [],
-  "__requires": [
-    {
-      "type": "panel",
-      "id": "geomap",
-      "name": "Geomap",
-      "version": ""
-    },
-    {
-      "type": "grafana",
-      "id": "grafana",
-      "name": "Grafana",
-      "version": "8.5.27"
-    },
-    {
-      "type": "datasource",
-      "id": "postgres",
-      "name": "PostgreSQL",
-      "version": "1.0.0"
-    },
-    {
-      "type": "panel",
-      "id": "table",
-      "name": "Table",
-      "version": ""
-    },
-    {
-      "type": "panel",
-      "id": "timeseries",
-      "name": "Time series",
-      "version": ""
-    }
-  ],
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "target": {
-          "limit": 100,
-          "matchAny": false,
-          "tags": [],
-          "type": "dashboard"
-        },
-        "type": "dashboard"
-      }
-    ]
-  },
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
-  "id": null,
-  "iteration": 1753952926403,
-  "links": [],
-  "liveNow": false,
-  "panels": [
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "postgresql"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto",
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
-      "id": 4,
-      "options": {
-        "footer": {
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "8.5.27",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "group": [],
-          "metricColumn": "entity_id",
-          "rawQuery": true,
-          "rawSql": "SELECT distinct\n  datetime AS \"time\",\n  entity_id AS metric,\n  location_centroid\nFROM mtopeniot.roadsegm_view\nWHERE\n  $__timeFilter(datetime) AND\n  reftrafficflowobs = '$entityID'\nORDER BY 1,2",
-          "refId": "A",
-          "select": [
-            [
-              {
-                "params": [
-                  "location_centroid"
-                ],
-                "type": "column"
-              }
-            ]
-          ],
-          "table": "mtopeniot.roadsegm_view",
-          "timeColumn": "datetime",
-          "timeColumnType": "timestamptz",
-          "where": [
-            {
-              "name": "$__timeFilter",
-              "params": [],
-              "type": "macro"
-            },
-            {
-              "datatype": "text",
-              "name": "",
-              "params": [
-                "reftrafficflowobs",
-                "=",
-                "'$entityID'"
+    "__inputs":  [
+                     {
+                         "name":  "postgresql",
+                         "label":  "PostgreSQL",
+                         "description":  "",
+                         "type":  "datasource",
+                         "pluginId":  "postgres",
+                         "pluginName":  "PostgreSQL"
+                     }
+                 ],
+    "__elements":  [
+
+                   ],
+    "__requires":  [
+                       {
+                           "type":  "panel",
+                           "id":  "geomap",
+                           "name":  "Geomap",
+                           "version":  ""
+                       },
+                       {
+                           "type":  "grafana",
+                           "id":  "grafana",
+                           "name":  "Grafana",
+                           "version":  "8.5.27"
+                       },
+                       {
+                           "type":  "datasource",
+                           "id":  "postgres",
+                           "name":  "PostgreSQL",
+                           "version":  "1.0.0"
+                       },
+                       {
+                           "type":  "panel",
+                           "id":  "table",
+                           "name":  "Table",
+                           "version":  ""
+                       },
+                       {
+                           "type":  "panel",
+                           "id":  "timeseries",
+                           "name":  "Time series",
+                           "version":  ""
+                       }
+                   ],
+    "annotations":  {
+                        "list":  [
+                                     {
+                                         "builtIn":  1,
+                                         "datasource":  {
+                                                            "type":  "grafana",
+                                                            "uid":  "-- Grafana --"
+                                                        },
+                                         "enable":  true,
+                                         "hide":  true,
+                                         "iconColor":  "rgba(0, 211, 255, 1)",
+                                         "name":  "Annotations \u0026 Alerts",
+                                         "target":  {
+                                                        "limit":  100,
+                                                        "matchAny":  false,
+                                                        "tags":  [
+
+                                                                 ],
+                                                        "type":  "dashboard"
+                                                    },
+                                         "type":  "dashboard"
+                                     }
+                                 ]
+                    },
+    "editable":  true,
+    "fiscalYearStartMonth":  0,
+    "graphTooltip":  0,
+    "id":  null,
+    "iteration":  1753952926403,
+    "links":  [
+
               ],
-              "type": "expression"
-            }
-          ]
-        }
-      ],
-      "title": "Panel Title",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "postgresql"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 16,
-        "w": 17,
-        "x": 0,
-        "y": 3
-      },
-      "id": 2,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "group": [],
-          "metricColumn": "none",
-          "rawQuery": false,
-          "rawSql": "SELECT\n  datetime AS \"time\",\n  trafficflow\nFROM mtopeniot.traffic_view\nWHERE\n  $__timeFilter(datetime) AND\n  entity_id = '$entityID'\nORDER BY 1",
-          "refId": "A",
-          "select": [
-            [
-              {
-                "params": [
-                  "trafficflow"
-                ],
-                "type": "column"
-              }
-            ]
-          ],
-          "table": "mtopeniot.traffic_view",
-          "timeColumn": "datetime",
-          "timeColumnType": "timestamptz",
-          "where": [
-            {
-              "name": "$__timeFilter",
-              "params": [],
-              "type": "macro"
-            },
-            {
-              "datatype": "text",
-              "name": "",
-              "params": [
-                "entity_id",
-                "=",
-                "'$entityID'"
-              ],
-              "type": "expression"
-            }
-          ]
-        }
-      ],
-      "title": "Panel Title",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "postgresql"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 16,
-        "w": 7,
-        "x": 17,
-        "y": 3
-      },
-      "id": 6,
-      "options": {
-        "controls": {
-          "mouseWheelZoom": true,
-          "showAttribution": true,
-          "showDebug": false,
-          "showScale": false,
-          "showZoom": true
-        },
-        "view": {
-          "id": "zero",
-          "lat": 0,
-          "lon": 0,
-          "zoom": 1
-        }
-      },
-      "pluginVersion": "8.5.27",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "postgresql"
-          },
-          "format": "time_series",
-          "group": [],
-          "metricColumn": "none",
-          "rawQuery": true,
-          "rawSql": "SELECT\n  ST_Y(location::geometry) AS latitude,\n  ST_X(location::geometry) AS longitude,\n  datetime AS \"time\"\nFROM mtopeniot.roadsegm_view\nWHERE\n   reftrafficflowobs = '$entityID'\n",
-          "refId": "A",
-          "select": [
-            [
-              {
-                "params": [
-                  "value"
-                ],
-                "type": "column"
-              }
-            ]
-          ],
-          "timeColumn": "time",
-          "where": [
-            {
-              "name": "$__timeFilter",
-              "params": [],
-              "type": "macro"
-            }
-          ]
-        }
-      ],
-      "title": "Panel Title",
-      "type": "geomap"
-    }
-  ],
-  "refresh": "",
-  "schemaVersion": 36,
-  "style": "dark",
-  "tags": [],
-  "templating": {
-    "list": [
-      {
-        "current": {},
-        "datasource": {
-          "type": "postgres",
-          "uid": "postgresql"
-        },
-        "definition": "SELECT DISTINCT entity_id FROM mtopeniot.traffic_view",
-        "hide": 0,
-        "includeAll": false,
-        "multi": false,
-        "name": "entityID",
-        "options": [],
-        "query": "SELECT DISTINCT entity_id FROM mtopeniot.traffic_view",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 1,
-        "type": "query"
-      },
-      {
-        "current": {},
-        "datasource": {
-          "type": "postgres",
-          "uid": "postgresql"
-        },
-        "definition": "",
-        "hide": 0,
-        "includeAll": false,
-        "multi": false,
-        "name": "entityLoopID",
-        "options": [],
-        "query": "",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
-        "type": "query"
-      }
-    ]
-  },
-  "time": {
-    "from": "2024-02-01T01:00:00.000Z",
-    "to": "2024-02-01T12:08:00.000Z"
-  },
-  "timepicker": {},
-  "timezone": "",
-  "title": "TFO Dashboard",
-  "uid": "l8-g1tiHk",
-  "version": 10,
-  "weekStart": ""
+    "liveNow":  false,
+    "panels":  [
+                   {
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "postgresql"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "custom":  {
+                                                                           "align":  "auto",
+                                                                           "displayMode":  "auto",
+                                                                           "inspect":  false
+                                                                       },
+                                                            "mappings":  [
+
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  80
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  3,
+                                       "w":  24,
+                                       "x":  0,
+                                       "y":  0
+                                   },
+                       "id":  4,
+                       "options":  {
+                                       "footer":  {
+                                                      "fields":  "",
+                                                      "reducer":  [
+                                                                      "sum"
+                                                                  ],
+                                                      "show":  false
+                                                  },
+                                       "showHeader":  true
+                                   },
+                       "pluginVersion":  "8.5.27",
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "postgresql"
+                                                          },
+                                           "format":  "time_series",
+                                           "group":  [
+
+                                                     ],
+                                           "metricColumn":  "entity_id",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT DISTINCT time, entity_id, trafficflow FROM (\n  SELECT datetime AS time, entity_id, trafficflow FROM mtopeniot.traffic_view WHERE entity_id = ${entityID:sqlstring}\n  UNION ALL\n  SELECT dateobserved AS time, entity_id, trafficflow FROM mtopeniot.etdevice WHERE entity_id = ${entityID:sqlstring}\n) measurements\nWHERE $__timeFilter(time)\nORDER BY 1",
+                                           "refId":  "A",
+                                           "select":  [
+                                                          [
+                                                              {
+                                                                  "params":  [
+                                                                                 "location_centroid"
+                                                                             ],
+                                                                  "type":  "column"
+                                                              }
+                                                          ]
+                                                      ],
+                                           "table":  "mtopeniot.roadsegm_view",
+                                           "timeColumn":  "datetime",
+                                           "timeColumnType":  "timestamptz",
+                                           "where":  [
+                                                         {
+                                                             "name":  "$__timeFilter",
+                                                             "params":  [
+
+                                                                        ],
+                                                             "type":  "macro"
+                                                         },
+                                                         {
+                                                             "datatype":  "text",
+                                                             "name":  "",
+                                                             "params":  [
+                                                                            "reftrafficflowobs",
+                                                                            "=",
+                                                                            "\u0027$entityID\u0027"
+                                                                        ],
+                                                             "type":  "expression"
+                                                         }
+                                                     ]
+                                       }
+                                   ],
+                       "title":  "Measurements",
+                       "type":  "table"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "postgresql"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "custom":  {
+                                                                           "axisLabel":  "",
+                                                                           "axisPlacement":  "auto",
+                                                                           "barAlignment":  0,
+                                                                           "drawStyle":  "line",
+                                                                           "fillOpacity":  0,
+                                                                           "gradientMode":  "none",
+                                                                           "hideFrom":  {
+                                                                                            "legend":  false,
+                                                                                            "tooltip":  false,
+                                                                                            "viz":  false
+                                                                                        },
+                                                                           "lineInterpolation":  "linear",
+                                                                           "lineWidth":  1,
+                                                                           "pointSize":  5,
+                                                                           "scaleDistribution":  {
+                                                                                                     "type":  "linear"
+                                                                                                 },
+                                                                           "showPoints":  "auto",
+                                                                           "spanNulls":  false,
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        },
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               }
+                                                                       },
+                                                            "mappings":  [
+
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  80
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  16,
+                                       "w":  17,
+                                       "x":  0,
+                                       "y":  3
+                                   },
+                       "id":  2,
+                       "options":  {
+                                       "legend":  {
+                                                      "calcs":  [
+
+                                                                ],
+                                                      "displayMode":  "list",
+                                                      "placement":  "bottom"
+                                                  },
+                                       "tooltip":  {
+                                                       "mode":  "single",
+                                                       "sort":  "none"
+                                                   }
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "postgresql"
+                                                          },
+                                           "format":  "table",
+                                           "group":  [
+
+                                                     ],
+                                           "metricColumn":  "none",
+                                           "rawQuery":  false,
+                                           "rawSql":  "SELECT DISTINCT time, trafficflow, timing_id FROM (\n  SELECT datetime AS time, trafficflow, to_jsonb(m)-\u003e\u003e\u0027timingid\u0027 AS timing_id\n  FROM mtopeniot.\"ethttps://smartdatamodels.org/datamodel.transportation/trafficf\" m\n  WHERE entity_id = ${entityID:sqlstring}\n  UNION ALL\n  SELECT dateobserved AS time, trafficflow, to_jsonb(m)-\u003e\u003e\u0027timingid\u0027 AS timing_id\n  FROM mtopeniot.etdevice m WHERE entity_id = ${entityID:sqlstring}\n) measurements\nWHERE $__timeFilter(time)\nORDER BY 1",
+                                           "refId":  "A",
+                                           "select":  [
+                                                          [
+                                                              {
+                                                                  "params":  [
+                                                                                 "trafficflow"
+                                                                             ],
+                                                                  "type":  "column"
+                                                              }
+                                                          ]
+                                                      ],
+                                           "table":  "mtopeniot.traffic_view",
+                                           "timeColumn":  "datetime",
+                                           "timeColumnType":  "timestamptz",
+                                           "where":  [
+                                                         {
+                                                             "name":  "$__timeFilter",
+                                                             "params":  [
+
+                                                                        ],
+                                                             "type":  "macro"
+                                                         },
+                                                         {
+                                                             "datatype":  "text",
+                                                             "name":  "",
+                                                             "params":  [
+                                                                            "entity_id",
+                                                                            "=",
+                                                                            "\u0027$entityID\u0027"
+                                                                        ],
+                                                             "type":  "expression"
+                                                         }
+                                                     ]
+                                       }
+                                   ],
+                       "title":  "Traffic flow",
+                       "type":  "bomodt-flow-panel"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "postgresql"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "custom":  {
+                                                                           "hideFrom":  {
+                                                                                            "legend":  false,
+                                                                                            "tooltip":  false,
+                                                                                            "viz":  false
+                                                                                        }
+                                                                       },
+                                                            "mappings":  [
+
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  80
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  16,
+                                       "w":  7,
+                                       "x":  17,
+                                       "y":  3
+                                   },
+                       "id":  6,
+                       "options":  {
+                                       "controls":  {
+                                                        "mouseWheelZoom":  true,
+                                                        "showAttribution":  true,
+                                                        "showDebug":  false,
+                                                        "showScale":  false,
+                                                        "showZoom":  true
+                                                    },
+                                       "view":  {
+                                                    "id":  "zero",
+                                                    "lat":  0,
+                                                    "lon":  0,
+                                                    "zoom":  1
+                                                },
+                                       "basemap":  {
+                                                       "config":  {
+
+                                                                  },
+                                                       "name":  "OpenStreetMap",
+                                                       "type":  "osm-standard"
+                                                   }
+                                   },
+                       "pluginVersion":  "8.5.27",
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "postgresql"
+                                                          },
+                                           "format":  "table",
+                                           "group":  [
+
+                                                     ],
+                                           "metricColumn":  "none",
+                                           "rawQuery":  true,
+                                           "rawSql":  "SELECT DISTINCT latitude, longitude FROM (\n  SELECT ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude\n  FROM mtopeniot.roadsegm_view WHERE reftrafficflowobs = ${entityID:sqlstring}\n  UNION ALL\n  SELECT (location-\u003e\u0027coordinates\u0027-\u003e\u003e0)::double precision AS latitude,\n         (location-\u003e\u0027coordinates\u0027-\u003e\u003e1)::double precision AS longitude\n  FROM mtopeniot.etdevice WHERE entity_id = ${entityID:sqlstring}\n) locations",
+                                           "refId":  "A",
+                                           "select":  [
+                                                          [
+                                                              {
+                                                                  "params":  [
+                                                                                 "value"
+                                                                             ],
+                                                                  "type":  "column"
+                                                              }
+                                                          ]
+                                                      ],
+                                           "timeColumn":  "time",
+                                           "where":  [
+                                                         {
+                                                             "name":  "$__timeFilter",
+                                                             "params":  [
+
+                                                                        ],
+                                                             "type":  "macro"
+                                                         }
+                                                     ]
+                                       }
+                                   ],
+                       "title":  "Sensor location",
+                       "type":  "geomap"
+                   }
+               ],
+    "refresh":  "5s",
+    "schemaVersion":  36,
+    "style":  "dark",
+    "tags":  [
+
+             ],
+    "templating":  {
+                       "list":  [
+                                    {
+                                        "current":  {
+                                                        "selected":  true,
+                                                        "value":  "urn:ngsi-ld:TrafficFlowObserved:TFO001",
+                                                        "text":  "urn:ngsi-ld:TrafficFlowObserved:TFO001"
+                                                    },
+                                        "datasource":  {
+                                                           "type":  "postgres",
+                                                           "uid":  "postgresql"
+                                                       },
+                                        "definition":  "SELECT entity_id FROM mtopeniot.traffic_view UNION SELECT entity_id FROM mtopeniot.etdevice ORDER BY 1",
+                                        "hide":  0,
+                                        "includeAll":  false,
+                                        "multi":  false,
+                                        "name":  "entityID",
+                                        "options":  [
+
+                                                    ],
+                                        "query":  "SELECT entity_id FROM mtopeniot.traffic_view UNION SELECT entity_id FROM mtopeniot.etdevice ORDER BY 1",
+                                        "refresh":  1,
+                                        "regex":  "",
+                                        "skipUrlSync":  false,
+                                        "sort":  1,
+                                        "type":  "query"
+                                    }
+                                ]
+                   },
+    "time":  {
+                 "from":  "2024-02-01T00:00:00.000Z",
+                 "to":  "2024-05-01T00:00:00.000Z"
+             },
+    "timepicker":  {
+
+                   },
+    "timezone":  "",
+    "title":  "TFO Dashboard",
+    "uid":  "l8-g1tiHk",
+    "version":  10,
+    "weekStart":  ""
 }

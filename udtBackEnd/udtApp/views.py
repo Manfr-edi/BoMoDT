@@ -24,10 +24,12 @@ from libraries.utils.generalUtils import loadEnvVar
 # from libraries.classes.DigitalTwinManager import configureCalibrateAndRun
 from .forms import ConfigForm
 from .models import Device
+from libraries.utils.executionTiming import read_execution_times
 
 
 def index(request):
-    return render(request, 'udtApp/index.html', {'nbar': 'home'})
+    from .emulation_views import home
+    return home(request)
 
 def monitor(request):
     # TODO: modify the grafana dashboard
@@ -169,7 +171,6 @@ def simulationModeler(request):
                                          sumoConfigurationPath=configurationPath, sumoLogFile=logFile)
         form = ConfigForm(request.POST)
         if form.is_valid():
-            messages.success(request, "Simulation Completed!")
             data = form.cleaned_data
             time_slot = [int(data['start_time']), int(data['end_time'])]
 
@@ -239,18 +240,13 @@ def serve_image(request, folder_name):
     else:
         raise Http404("Immagine non trovata")
 def simulationResults(request):
+    from mobilityvenv.emulation_store import recent_sessions
     # Regex per il formato "yyyy_mm_dd_Nome1_Nome2"
     FOLDER_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_(.+)$")  # Nota il $ alla fine
 
     # Getting the absolute path of the scenarioCollection folder
-    current_dir = os.path.abspath(os.getcwd())
-    current_path = Path(current_dir).resolve()
-    project_root = current_path.parent
-    base_dir = project_root / 'sumoenv'
-    if not os.path.exists(base_dir):
-        base_dir = project_root / 'MOBIDT' / 'sumoenv'
-        if not os.path.exists(base_dir):
-            return render(request, 'udtApp/emptyPage.html', {'item': 'Scenario folder'})
+    base_dir = Path(SUMO_PATH)
+    base_dir.mkdir(parents=True, exist_ok=True)
     folders = []
     for folder in os.listdir(base_dir):
         if os.path.isdir(os.path.join(base_dir, folder)):
@@ -260,17 +256,15 @@ def simulationResults(request):
                 display_name = match.group(0).replace("_", " ").title()  # Rimuove underscore
                 folders.append({"full_name": folder, "display_name": display_name})
 
-    return render(request, "udtApp/simulationResults.html", {"folders": folders})
+    return render(request, "udtApp/simulationResults.html", {'folders': folders,
+        'emulation_sessions': recent_sessions(), 'nbar': 'simulationResults'})
 
 
 
 def serveResults(request, folder_name):
     FOLDER_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_(.+)$")  # Nota il $ alla fine
     # folder_path = os.path.join(settings.MEDIA_ROOT, "your_directory", folder_name)
-    current_dir = os.path.abspath(os.getcwd())
-    current_path = Path(current_dir).resolve()
-    project_root = current_path.parent
-    base_dir = project_root / 'sumoenv'
+    base_dir = Path(SUMO_PATH)
     folder_path = os.path.join(base_dir, folder_name)
 
 
@@ -305,9 +299,22 @@ def serveResults(request, folder_name):
         else:
             evaluation_results = {}
 
-        # TODO
-        # Placeholder path for the image
-        result_image_url = '/static/img/mock_plot1.png'  # assicurati di avere questa immagine nella cartella static
+        execution_times = read_execution_times(folder_path)
+        timing_rows = []
+        if execution_times:
+            baseline = execution_times.get('baseline', {})
+            phases = execution_times.get('phases', {})
+            timing_rows = [
+                {'label': 'Baseline', 'seconds': baseline.get('mean_seconds'),
+                 'detail': f"Mean send-to-display latency · {baseline.get('count', 0)} rendered / {baseline.get('sent_count', 0)} sent samples"},
+                {'label': 'Macromodeling', 'seconds': phases.get('macromodeling'),
+                 'detail': 'Total macroscopic model calculation across selected hours'},
+                {'label': 'Simulation', 'seconds': phases.get('simulation'),
+                 'detail': 'Scenario reconstruction, routes, SUMO startup and execution'},
+            ]
+            maximum = max((row['seconds'] or 0 for row in timing_rows), default=1) or 1
+            for row in timing_rows:
+                row['width'] = round(100 * (row['seconds'] or 0) / maximum, 2)
 
         # URL della dashboard grafana (modifica con la tua se necessario)
         grafana_url = "http://localhost:3000/d/l8-g1tiHk/"
@@ -316,7 +323,9 @@ def serveResults(request, folder_name):
             'calibration': calibration_params,
             'stats': stats_result,
             'results': evaluation_results,
-            'result_image_url': result_image_url,
+            'execution_times': execution_times,
+            'timing_rows': timing_rows,
+            'folder_name': folder_name,
             'grafana_url': grafana_url,
             'nbar': 'summary',
         }

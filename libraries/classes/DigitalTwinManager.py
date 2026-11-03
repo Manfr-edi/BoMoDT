@@ -17,6 +17,7 @@ from libraries.classes.TrafficModeler import TrafficModeler
 from libraries.constants import SUMO_PATH, SUMO_NET_PATH, SUMO_ROUTES_PATH, projectPath, PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, EDGE_DATA_FILE_PATH
 from libraries.utils import statisticUtils
 from libraries.utils.preprocessingUtils import generateEdgeDataFile
+from libraries.utils.executionTiming import ExecutionTiming
 
 class DigitalTwinManager:
     """
@@ -101,32 +102,40 @@ class DigitalTwinManager:
 
         Returns: returns the folder path in which simulations and results are stored.
         """
+        if not 0 <= timeslot[0] < timeslot[1] <= 24:
+            raise ValueError('Select a nonempty time window between 0 and 24.')
+        timing = ExecutionTiming()
         basemodel = TrafficModeler(simulator=self.sumoSimulator, trafficDataFile=dataFilePath,
                                    sumoNetFile=SUMO_NET_PATH,
                                    date=date,
-                                   timeSlot='00:00-01:00',
+                                   timeSlot=f'{timeslot[0]:02d}:00-{timeslot[0]+1:02d}:00',
                                    modelType=macroModelType)
         print("Starting Configuration")
         # For each timeslot a TrafficModeler is set, hence constructing the macroscopic model
         for hour in range(timeslot[0], timeslot[1]):
+            macro_before = basemodel.macromodeling_seconds if hour != timeslot[0] else 0.0
             timeSlotFolder = ''
             if hour < 9:
-                basemodel.changeTimeslot(timeSlot='0' + str(hour) + ':00-' + '0' + str(hour + 1) + ':00')
+                if hour != timeslot[0]:
+                    basemodel.changeTimeslot(timeSlot='0' + str(hour) + ':00-' + '0' + str(hour + 1) + ':00')
                 timeSlotFolder = '0' + str(hour) + ':00-' + '0' + str(hour + 1) + ':00'
             elif hour == 9:
-                basemodel.changeTimeslot('0' + str(hour) + ':00-' + str(hour + 1) + ':00')
+                if hour != timeslot[0]:
+                    basemodel.changeTimeslot('0' + str(hour) + ':00-' + str(hour + 1) + ':00')
                 timeSlotFolder = '0' + str(hour) + ':00-' + str(hour + 1) + ':00'
             else:
-                basemodel.changeTimeslot(str(hour) + ':00-' + str(hour + 1) + ':00')
+                if hour != timeslot[0]:
+                    basemodel.changeTimeslot(str(hour) + ':00-' + str(hour + 1) + ':00')
                 timeSlotFolder = str(hour) + ':00-' + str(hour + 1) + ':00'
 
             # Plot macroscopic data according to the selected macroscopic model fundamental diagram
             # basemodel.plotModel()
 
             # a car-following model is constructed, creating a specific file stored in the typeFilePath
+            simulation_started = time.perf_counter()
             typeFilePath, confPath = basemodel.vTypeGeneration(modelType=carFollowingModel, tau=tau,
                                                            additionalParam=parameters)
-            generateEdgeDataFile(input_file=PROCESSED_TRAFFIC_FLOW_EDGE_FILE_PATH, date=date, time_slot=timeSlotFolder)
+            generateEdgeDataFile(input_file=dataFilePath, date=date, time_slot=timeSlotFolder)
             self.planner.scenarioGenerator.generateRoute(inputEdgePath=EDGE_DATA_FILE_PATH,timeSlot=timeSlotFolder,
                                                          totalCount=totalCount)
             # the model values are saved in a .csv file
@@ -145,6 +154,11 @@ class DigitalTwinManager:
             print(route_folder_path)
             self.sumoSimulator.changeRouteFilePath(route_folder_path)
             self.sumoSimulator.start(activeGui=False, logFilePath=self.sumoSimulator.logFile)
+            simulation_seconds = time.perf_counter() - simulation_started
+            timing.seconds['simulation'] += simulation_seconds
+            timing.slots.append({'timeslot': timeSlotFolder,
+                                 'macromodeling_seconds': basemodel.macromodeling_seconds - macro_before,
+                                 'simulation_seconds': simulation_seconds})
             time.sleep(10)
 
         # confPath = projectPath + "/" + confPath
@@ -168,6 +182,8 @@ class DigitalTwinManager:
 
         statisticUtils.evaluateSimulationError(confPath)
         statisticUtils.compute_mean_tripinfo_metrics(confPath)
+        timing.seconds['macromodeling'] = basemodel.macromodeling_seconds
+        timing.save(confPath, date, timeslot)
         return confPath
 
     def generateGraphs(self, scenarioFolder: str):

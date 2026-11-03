@@ -18,6 +18,8 @@ import requests
 from requests.structures import CaseInsensitiveDict
 from libraries.classes.Broker import *
 import time
+from uuid import uuid4
+from libraries.utils.executionTiming import record_send
 
 class Agent:
     agentID: str
@@ -40,6 +42,7 @@ class Agent:
         self.fiwareServicePath = fw_path
         self.cbReference = None
         self.cbConnection = None
+        self.timing_session_id = str(uuid4())
 
     def isServiceGroupRegistered(self, entity_type: str):
         # Check if the device is already registered
@@ -47,7 +50,7 @@ class Agent:
         header = CaseInsensitiveDict()
         header["fiware-service"] = self.fiwareService
         header["fiware-servicepath"] = self.fiwareServicePath
-        response = requests.get(url, headers=header)
+        response = requests.get(url, headers=header, timeout=15)
         # TODO: improve the type of check done to find the service group
         if entity_type in response.text:
             # print("Entity type found inside the body response")
@@ -61,7 +64,7 @@ class Agent:
         header = CaseInsensitiveDict()
         header["fiware-service"] = self.fiwareService
         header["fiware-servicepath"] = self.fiwareServicePath
-        response = requests.get(url, headers=header)
+        response = requests.get(url, headers=header, timeout=15)
         # TODO: improve the type of check done to find the device
         if response.status_code == 200:
             # print("Device found")
@@ -77,7 +80,7 @@ class Agent:
         header = CaseInsensitiveDict()
         header["fiware-service"] = self.fiwareService
         header["fiware-servicepath"] = self.fiwareServicePath
-        response = requests.get(url, headers=header)
+        response = requests.get(url, headers=header, timeout=15)
         # TODO: improve the type of check done to find the key
         if entity_type in response.text:
             # print("Entity type found inside the body response")
@@ -112,12 +115,24 @@ class Agent:
                 }
             ]
         }
-        reg_response = requests.post(url_registration, headers=header, data=json.dumps(payload))
+        reg_response = requests.post(url_registration, headers=header, data=json.dumps(payload), timeout=15)
         return reg_response
 
     def measurementRegistration(self, measure_type: str, device_id: str, entity_type: str, timezone,
                                 controlled_asset: str):
         if self.isDeviceRegistered(device_id):
+            # Upgrade existing registrations without deleting their attributes.
+            url = f"http://{self.hostname}:{self.northPortNumber}/iot/devices/{device_id}"
+            headers = {'fiware-service': self.fiwareService, 'fiware-servicepath': self.fiwareServicePath}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            attributes = response.json().get('attributes', [])
+            missing = [name for name in ('timingId', 'timingSession')
+                       if not any(attribute.get('name') == name for attribute in attributes)]
+            if missing:
+                attributes.extend({'object_id': name, 'name': name, 'type': 'Text'} for name in missing)
+                response = requests.put(url, headers=headers, json={'attributes': attributes}, timeout=10)
+                response.raise_for_status()
             print("Device is already registered. Skipping registration.")
             return True
         url_registration = "http://{}:{}/iot/devices".format(self.hostname, self.northPortNumber)
@@ -141,7 +156,9 @@ class Agent:
                             {"object_id": "location", "name": "location", "type": "GeoProperty"}, #GeoProperty is correct
                             {"object_id": "laneDirection", "name": "laneDirection", "type": "TextUnrestricted"},
                             {"object_id": "timeSlot", "name": "timeSlot", "type": "TextUnrestricted"},
-                            {"object_id": "dateObserved", "name": "dateObserved", "type": "TextUnrestricted"}
+                            {"object_id": "dateObserved", "name": "dateObserved", "type": "TextUnrestricted"},
+                            {"object_id": "timingId", "name": "timingId", "type": "Text"},
+                            {"object_id": "timingSession", "name": "timingSession", "type": "Text"}
                         ],
                         "static_attributes": [
                             {"name": "deviceCategory", "type": "Text", "value": "Sensor"},
@@ -149,7 +166,7 @@ class Agent:
                         ]
                     }]}
         # print(payload)
-        reg_response = requests.post(url_registration, headers=header, data=json.dumps(payload))
+        reg_response = requests.post(url_registration, headers=header, data=json.dumps(payload), timeout=15)
         return reg_response
 
     def retrievingData(self, *data, device_id, device_key):
@@ -204,8 +221,16 @@ class Agent:
             }
 
         try:
-
-            sendingResponse = requests.post(url_sending, headers=header, data=json.dumps(payload))
+            payload['timingId'] = str(uuid4())
+            payload['timingSession'] = self.timing_session_id
+            self.last_measurement_id = payload['timingId']
+            encoded_payload = json.dumps(payload)
+            sent_at_ms = time.time() * 1000
+            try:
+                sendingResponse = requests.post(url_sending, headers=header, data=encoded_payload, timeout=15)
+            finally:
+                record_send(self.timing_session_id, f'urn:ngsi-ld:Device:{device_id}',
+                            date, timeSlot, sent_at_ms, payload['timingId'])
             sendingResponse.raise_for_status()  # Raise an error if the status code is not 2xx
         except requests.RequestException as e:
             raise Exception(f"Failed to send data to IoT Agent: {e}")
@@ -221,7 +246,8 @@ class Agent:
                 print("Updating Context Broker entities linked to device: " + str(device_id) + "...")
                 # time.sleep(3)
                 cbResponse = self.cbReference.updateContext(deviceID=device_id, date=date, timeSlot=timeSlot, trafficFlow=flow,
-                                                  coordinates=coordinates,laneDirection=direction, taz=taz, cbConnection=self.cbConnection)
+                                                  coordinates=coordinates,laneDirection=direction, taz=taz, cbConnection=self.cbConnection,
+                                                  timing_id=payload['timingId'], timing_session=self.timing_session_id)
                 if cbResponse is True:
                     return True
                 else:

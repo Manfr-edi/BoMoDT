@@ -1,0 +1,249 @@
+{
+    "__inputs":  [
+                     {
+                         "name":  "postgresql",
+                         "label":  "PostgreSQL",
+                         "description":  "",
+                         "type":  "datasource",
+                         "pluginId":  "postgres",
+                         "pluginName":  "PostgreSQL"
+                     }
+                 ],
+    "__elements":  [
+
+                   ],
+    "__requires":  [
+                       {
+                           "type":  "panel",
+                           "id":  "geomap",
+                           "name":  "Geomap",
+                           "version":  ""
+                       },
+                       {
+                           "type":  "grafana",
+                           "id":  "grafana",
+                           "name":  "Grafana",
+                           "version":  "8.5.27"
+                       },
+                       {
+                           "type":  "datasource",
+                           "id":  "postgres",
+                           "name":  "PostgreSQL",
+                           "version":  "1.0.0"
+                       },
+                       {
+                           "type":  "panel",
+                           "id":  "table",
+                           "name":  "Table",
+                           "version":  ""
+                       },
+                       {
+                           "type":  "panel",
+                           "id":  "timeseries",
+                           "name":  "Time series",
+                           "version":  ""
+                       }
+                   ],
+    "annotations":  {
+                        "list":  [
+                                     {
+                                         "builtIn":  1,
+                                         "datasource":  {
+                                                            "type":  "grafana",
+                                                            "uid":  "-- Grafana --"
+                                                        },
+                                         "enable":  true,
+                                         "hide":  true,
+                                         "iconColor":  "rgba(0, 211, 255, 1)",
+                                         "name":  "Annotations \u0026 Alerts",
+                                         "target":  {
+                                                        "limit":  100,
+                                                        "matchAny":  false,
+                                                        "tags":  [
+
+                                                                 ],
+                                                        "type":  "dashboard"
+                                                    },
+                                         "type":  "dashboard"
+                                     }
+                                 ]
+                    },
+    "editable":  true,
+    "fiscalYearStartMonth":  0,
+    "graphTooltip":  0,
+    "id":  null,
+    "iteration":  1753952926403,
+    "links":  [
+
+              ],
+    "liveNow":  false,
+    "panels":  [
+                   {
+                       "datasource":  {
+                                          "type":  "postgres",
+                                          "uid":  "postgresql"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "palette-classic"
+                                                                      },
+                                                            "custom":  {
+                                                                           "axisLabel":  "",
+                                                                           "axisPlacement":  "auto",
+                                                                           "barAlignment":  0,
+                                                                           "drawStyle":  "line",
+                                                                           "fillOpacity":  0,
+                                                                           "gradientMode":  "none",
+                                                                           "hideFrom":  {
+                                                                                            "legend":  false,
+                                                                                            "tooltip":  false,
+                                                                                            "viz":  false
+                                                                                        },
+                                                                           "lineInterpolation":  "linear",
+                                                                           "lineWidth":  1,
+                                                                           "pointSize":  5,
+                                                                           "scaleDistribution":  {
+                                                                                                     "type":  "linear"
+                                                                                                 },
+                                                                           "showPoints":  "auto",
+                                                                           "spanNulls":  false,
+                                                                           "stacking":  {
+                                                                                            "group":  "A",
+                                                                                            "mode":  "none"
+                                                                                        },
+                                                                           "thresholdsStyle":  {
+                                                                                                   "mode":  "off"
+                                                                                               }
+                                                                       },
+                                                            "mappings":  [
+
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  80
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "y":  0,
+                                       "w":  24,
+                                       "x":  0,
+                                       "h":  12
+                                   },
+                       "id":  2,
+                       "options":  {
+                                       "legend":  {
+                                                      "calcs":  [
+
+                                                                ],
+                                                      "displayMode":  "list",
+                                                      "placement":  "bottom"
+                                                  },
+                                       "tooltip":  {
+                                                       "mode":  "single",
+                                                       "sort":  "none"
+                                                   }
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "postgres",
+                                                              "uid":  "postgresql"
+                                                          },
+                                           "format":  "table",
+                                           "group":  [
+
+                                                     ],
+                                           "metricColumn":  "none",
+                                           "rawQuery":  false,
+                                           "rawSql":  "SELECT DISTINCT dateobserved + make_interval(hours =\u003e split_part(timeslot, \u0027:\u0027, 1)::integer) AS time,\n  entity_id, trafficflow, to_jsonb(m)-\u003e\u003e\u0027timingid\u0027 AS timing_id\nFROM mtopeniot.etdevice m\nWHERE to_jsonb(m)-\u003e\u003e\u0027timingsession\u0027 = ${sessionID:sqlstring}\n  AND dateobserved \u003e= $__timeFrom() AND dateobserved \u003c= $__timeTo()\nORDER BY 1,2",
+                                           "refId":  "A",
+                                           "select":  [
+                                                          [
+                                                              {
+                                                                  "params":  [
+                                                                                 "trafficflow"
+                                                                             ],
+                                                                  "type":  "column"
+                                                              }
+                                                          ]
+                                                      ],
+                                           "table":  "mtopeniot.traffic_view",
+                                           "timeColumn":  "datetime",
+                                           "timeColumnType":  "timestamptz",
+                                           "where":  [
+                                                         {
+                                                             "name":  "$__timeFilter",
+                                                             "params":  [
+
+                                                                        ],
+                                                             "type":  "macro"
+                                                         },
+                                                         {
+                                                             "datatype":  "text",
+                                                             "name":  "",
+                                                             "params":  [
+                                                                            "entity_id",
+                                                                            "=",
+                                                                            "\u0027$entityID\u0027"
+                                                                        ],
+                                                             "type":  "expression"
+                                                         }
+                                                     ]
+                                       }
+                                   ],
+                       "title":  "Transmitted traffic flow: all sensors in this session",
+                       "type":  "bomodt-flow-panel"
+                   }
+               ],
+    "refresh":  "5s",
+    "schemaVersion":  36,
+    "style":  "dark",
+    "tags":  [
+
+             ],
+    "templating":  {
+                       "list":  [
+                                    {
+                                        "query":  "none",
+                                        "hide":  2,
+                                        "current":  {
+                                                        "text":  "none",
+                                                        "value":  "none"
+                                                    },
+                                        "name":  "sessionID",
+                                        "type":  "textbox",
+                                        "label":  "Emulation session",
+                                        "options":  [
+
+                                                    ],
+                                        "skipUrlSync":  false
+                                    }
+                                ]
+                   },
+    "time":  {
+                 "from":  "2024-02-01T00:00:00.000Z",
+                 "to":  "2024-05-01T00:00:00.000Z"
+             },
+    "timepicker":  {
+
+                   },
+    "timezone":  "",
+    "title":  "Emulation: all sensors",
+    "uid":  "bomodt-emulation",
+    "version":  1,
+    "weekStart":  ""
+}

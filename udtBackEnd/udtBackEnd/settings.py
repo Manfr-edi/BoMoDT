@@ -13,10 +13,14 @@ import os.path
 from pathlib import Path
 from mongoengine import connect
 import sys
-sys.path.append("C:/Users\manfr\PycharmProjects\IntelliFlowTwin")
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Make the shared project libraries available to all Django entry points.
+PROJECT_ROOT = BASE_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # Quick-start development settings - unsuitable for production

@@ -171,13 +171,15 @@ def convertDate(date: str, timeslot: str):
     # Extract start and end times in 24-hour format
     start_time, end_time = timeslot.split("-")
     end_hour_24 = int(end_time.split(":")[0])
-    if end_hour_24 == 24:
+    next_day = end_hour_24 == 24
+    if next_day:
         end_hour_24 = 0
-        day += 1
     # Generate a random delay in minutes (between 0 and 10)
     random_delay = random.randint(0, 10)
     # Combine date and end time to create a datetime object for the end time of the timeslot
     base_time = datetime(year, month, day, end_hour_24, 0)
+    if next_day:
+        base_time += timedelta(days=1)
     # Add the random delay in minutes to the base time
     final_time = base_time + timedelta(minutes=random_delay)
     # Format as ISO 8601 with 24-hour time

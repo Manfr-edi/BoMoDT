@@ -1,14 +1,73 @@
-<!DOCTYPE html>
 {% extends 'udtApp/base.html' %}
-<html lang="en">
+{% load static %}
 {% block content %}
-<head>
-    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
-    <meta charset="UTF-8">
-    <title>Index Page</title>
-</head>
-<body>
-This is the Homepage
-</body>
+<div class="container-fluid px-4 py-4" id="emulation-app"
+     data-status-url="{% url 'emulation_status' %}" data-start-url="{% url 'emulation_start' %}"
+     data-action-url="{% url 'emulation_action' 'SESSION' %}" data-export-url="{% url 'emulation_export' 'SESSION' %}">
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
+    <div><h1 class="h2">Emulazione della città</h1><p class="text-muted mb-0">Trasmetti le misure storiche dei sensori e osserva i tempi della pipeline.</p></div>
+    <span class="badge bg-secondary fs-6" id="emulation-state">Nessuna sessione</span>
+  </div>
+  <div id="emulation-errors" class="alert alert-danger" role="alert" hidden></div>
+  {% if dataset_error %}<div class="alert alert-danger">{{ dataset_error }}</div>{% endif %}
+  <div class="row g-4">
+    <div class="col-xl-4">
+      <div class="card shadow-sm"><div class="card-header">Configura una nuova emulazione</div><div class="card-body">
+      {% if emulation_form %}
+        <p class="small text-muted">{{ emulation_form.available_dates|length }} giorni disponibili. Le date senza dati vengono segnalate e, se richiesto, saltate.</p>
+        <form id="emulation-form" method="post">{% csrf_token %}
+          <fieldset id="emulation-fields">
+          <div class="row g-3">
+            {% for field in emulation_form %}
+              {% if field.name == 'macromodel' %}<div class="col-12"><details><summary>Parametri dei modelli e di SUMO</summary><div class="row g-3 pt-3">{% endif %}
+              <div class="{% if field.name == 'sensor_ids' or field.name == 'pacing' or field.name == 'pipeline' or field.name == 'skip_missing_days' or field.name == 'continue_on_error' %}col-12{% else %}col-md-6{% endif %}" data-field="{{ field.name }}">
+                {% if field.field.widget.input_type == 'checkbox' %}
+                  <label class="form-check-label">{{ field }} {{ field.label }}</label>
+                {% else %}<label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% endif %}
+                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              </div>
+              {% if forloop.last %}</div></details></div>{% endif %}
+            {% endfor %}
+          </div>
+          <p class="small text-muted mt-3">Default: una giornata distribuita in 60 secondi. Con intervallo 0 gli invii sono continui (bulk). Il ritmo effettivo dipende dalla risposta di FIWARE.</p>
+          <p id="emulation-mode-description" class="alert alert-info small"></p>
+          <button class="btn btn-primary w-100" type="submit" id="emulation-start">Avvia emulazione</button>
+          </fieldset>
+        </form>
+      {% endif %}
+      </div></div>
+    </div>
+    <div class="col-xl-8">
+      <div class="card shadow-sm mb-3"><div class="card-body">
+        <div class="d-flex gap-2 flex-wrap mb-3">
+          <button class="btn btn-outline-primary" id="emulation-pause" disabled>Pausa</button>
+          <button class="btn btn-outline-danger" id="emulation-stop" disabled>Stop</button>
+          <a class="btn btn-outline-secondary" id="emulation-export" hidden>Esporta tempi JSON</a>
+        </div>
+        <label for="emulation-history" class="form-label small">Sessione visualizzata</label>
+        <select class="form-select mb-3" id="emulation-history"><option value="">Ultima sessione</option>
+          {% for session in emulation_sessions %}<option value="{{ session.id }}">{{ session.config.start_date }} → {{ session.config.end_date }} · {{ session.status }} · {{ session.id|slice:':8' }}</option>{% endfor %}
+        </select>
+        <div class="progress mb-2" role="progressbar" aria-label="Invii completati" aria-valuemin="0" aria-valuemax="100" id="emulation-progress"><div class="progress-bar" style="width:0%"></div></div>
+        <p id="emulation-position" class="mb-1">Configura le date e premi Avvia.</p>
+        <p id="emulation-mode" class="fw-semibold mb-1"></p>
+        <p class="small text-muted mb-1" id="emulation-counts"></p>
+        <p class="small text-muted mb-0">Pausa e stop si applicano al prossimo punto di controllo: una richiesta o una generazione rotte già in corso viene prima completata. Puoi lasciare questa pagina e tornare senza perdere la sessione.</p>
+      </div></div>
+      <div class="row g-3 mb-3">
+        <div class="col-md-4"><div class="card h-100"><div class="card-body"><h2 class="h6">Baseline</h2><div class="fs-3" id="baseline-mean">—</div><p class="small mb-0" id="baseline-coverage">Nessun campione visualizzato</p></div></div></div>
+        <div class="col-md-4"><div class="card h-100"><div class="card-body"><h2 class="h6">Calcolo macromodello</h2><div class="fs-3" id="macro-mean">—</div><p class="small mb-0" id="macro-coverage">Solo applicazione delle formule a flusso, densità e velocità</p></div></div></div>
+        <div class="col-md-4"><div class="card h-100"><div class="card-body"><h2 class="h6">Simulation</h2><div class="fs-3" id="simulation-mean">—</div><p class="small mb-0" id="simulation-coverage">Invio → SUMO completato</p></div></div></div>
+      </div>
+      <p class="small text-muted">Medie su tutte le trasmissioni misurate, non medie delle medie dei sensori. I tempi fino al modello/SUMO includono raccolta della fascia oraria e attesa in coda; i soli tempi di calcolo sono riportati sotto.</p>
+      <div id="emulation-dashboard-container"><h2 class="h5">Misure della sessione su Grafana</h2><p class="small text-muted" id="emulation-dashboard-description">La dashboard della sessione compare dopo l’avvio. Lasciala visibile per raccogliere la baseline di tutti i sensori. Refresh ogni 5 secondi.</p>
+        <a id="emulation-dashboard-link" class="btn btn-sm btn-outline-secondary mb-2" href="http://localhost:3000/d/bomodt-emulation/emulation?var-sessionID=none&amp;kiosk=1" target="_blank" rel="noopener">Apri dashboard Grafana</a>
+        <iframe id="emulation-dashboard" src="http://localhost:3000/d/bomodt-emulation/emulation?var-sessionID=none&amp;kiosk=1" title="Grafana: tutti i sensori della sessione" style="width:100%;height:450px;border:0" loading="eager"></iframe>
+      </div>
+      <details class="mt-3"><summary>Tempi per sensore</summary><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Sensore</th><th>Invii</th><th>Visualizzati</th><th>Baseline media</th></tr></thead><tbody id="emulation-sensors"></tbody></table></div></details>
+      <details class="mt-3" open><summary>Coda dei calcoli per fascia oraria</summary><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Giorno / ora</th><th>Stato</th><th>Campioni</th><th>Calcolo macro</th><th>Preparazione + SUMO</th></tr></thead><tbody id="emulation-jobs"></tbody></table></div></details>
+    </div>
+  </div>
+</div>
+<script src="{% static 'udtApp/js/emulation.js' %}"></script>
 {% endblock content %}
-</html>
